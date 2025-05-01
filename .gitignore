@@ -1,0 +1,48 @@
+# Python 相關
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# 虛擬環境
+venv/
+.env/
+.env
+
+# 資料庫與金鑰檔案
+*.db
+*.json
+
+# VSCode 等 IDE 設定
+.vscode/
+*.code-workspace
+
+# 日誌與暫存
+*.log
+logs/
+*.pid
+*.seed
+*.pid.lock
+
+# 不使用的 Firebase 舊檔
+firebase-debug.log*
+firebase-debug.*.log*
+.firebase/
+.firebaserc
+
+# 你曾使用 Node 的遺留資料夾（如果完全沒在用了可以刪）
+node_modules/
+bower_components/
+build/
+dist/
+coverage/
+.nyc_output/
+.yarn-integrity
+.lock-wscript
+
+# 排除大檔案與虛擬環境
+*.exe
+*.zip
+venv/
+__pycache__/
+.env
