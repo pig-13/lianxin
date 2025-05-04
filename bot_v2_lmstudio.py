@@ -6,8 +6,8 @@ from discord.ext import commands
 from dotenv import load_dotenv
 import time
 from datetime import datetime, timedelta
-import pytz
-from db_utils import get_character_by_user_id, get_latest_memory_id
+import pytz, asyncio 
+from db_utils import get_character_by_user_id
 import tiktoken
 
 # Load environment variables
@@ -115,6 +115,39 @@ def get_long_term_memories(user_id: str, limit: int = 50) -> list[str]:
     return [r[0] for r in rows]
 # ────────────────────────────────────────────────────────────────
 
+# === API COUNTER（每日 0:00 重置，1 聊天 = 2 請求） ===================
+DAILY_LIMIT         = 1000
+REQUESTS_PER_CHAT   = 2
+tz = pytz.timezone("Asia/Taipei")
+
+with sqlite3.connect(DB_PATH) as conn:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS api_log (
+            day_key TEXT PRIMARY KEY,
+            count   INTEGER DEFAULT 0
+        );
+    """)
+
+def _day_key_now() -> str:
+    return datetime.now(tz).strftime("%Y-%m-%d")   # 以 0:00 為界
+
+def increment_api_counter(amount: int = 1):
+    day_key = _day_key_now()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            INSERT INTO api_log(day_key, count) VALUES(?, ?)
+            ON CONFLICT(day_key) DO UPDATE SET count = count + ?;
+        """, (day_key, amount, amount))
+        conn.commit()
+
+def get_today_usage() -> int:
+    day_key = _day_key_now()
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute("SELECT count FROM api_log WHERE day_key=?", (day_key,))
+        row = cur.fetchone()
+        return row[0] if row else 0
+# ======================================================================
+
 # === GENERATE REPLY ==================================================
 def generate_reply(messages,
                    model: str = "deepseek/deepseek-chat-v3-0324:free",
@@ -122,7 +155,7 @@ def generate_reply(messages,
                    max_tokens: int = 256,
                    max_retries: int = 3) -> str:
     """呼叫 OpenRouter，失敗自動重試並顯示錯誤"""
-
+    increment_api_counter()
     print(f"[OpenRouter] 使用模型：{model}")
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -167,18 +200,55 @@ def generate_reply(messages,
 async def on_ready():
     print(f"已登入為 {bot.user}")
     print("機器人已啟動！")
+    check_reminders.start()  # 啟動提醒檢查任務
+
+from discord.ext import tasks
+
+@tasks.loop(seconds=60)
+async def check_reminders():
+    tz = pytz.timezone("Asia/Taipei")
+    now = datetime.now(tz)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, user_id, scheduled, reminder_text, repeat FROM reminders")
+    rows = cursor.fetchall()
+
+    for r in rows:
+        reminder_id, user_id, scheduled_str, text, repeat = r
+        scheduled_time = datetime.fromisoformat(scheduled_str).astimezone(tz)
+        if now >= scheduled_time:
+            user = await bot.fetch_user(int(user_id))
+            try:
+                await user.send(f"⏰ 提醒你：{text}")
+            except Exception as e:
+                print(f"提醒發送失敗給 {user_id}: {e}")
+
+            if repeat:
+                next_time = scheduled_time + timedelta(days=1)
+                cursor.execute("UPDATE reminders SET scheduled = ? WHERE id = ?", (next_time.isoformat(), reminder_id))
+            else:
+                cursor.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+
+    conn.commit()
+    conn.close()
+
 @bot.command()
 async def 指令(ctx):
     text = (
-        "**可用指令**："
-        "`！查看角色` - 查看角色資料 (屬於自己的)"
-        "`！重設角色` - 重置自己的角色資料"
-        "`！設定角色` - 設定自己的角色資料"
-        "`！聊天 <訊息>` - 與角色聊天 (含對話記憶, 有動作)"
-        "`！提醒 <HH:MM> <訊息>` - 請角色提醒你事情 (含對話記憶)"
-        "`！清除記憶` - 清除你與角色的對話記憶"
-        "`！查我ID` - 查看你的discord使用者ID"
-        "`！查看記憶` - 查看最近的記憶"
+        "**可用指令**：\n"
+        "`！查看角色` - 查看角色資料 (屬於自己的)\n"
+        "`！重設角色` - 重置自己的角色資料\n"
+        "`！設定角色` - 設定自己的角色資料\n"
+        "`！聊天 <訊息>` - 與角色聊天 (含對話記憶, 有動作)\n"
+        "`！提醒 <HH:MM> <訊息>` - 只提醒一次，例如：`！提醒 12:00 吃飯`\n"
+        "`！提醒 <HH:MM> 每天 <訊息>` - 每天固定時間提醒，例如：`！提醒 21:30 每天 喝水`\n"
+        "`！提醒 <MM/DD HH:MM> <訊息>` - 指定日期提醒一次，例如：`！提醒 05/11 12:00 考試`\n"
+        "`！查看已有提醒` - 看你目前已經設定了那些提醒\n"
+        "`！刪除提醒 <編號>` - 刪除某個提醒（可先用 `！查看已有提醒` 查看編號）\n"
+        "`！清除記憶` - 清除你與角色的對話記憶\n"
+        "`！查我ID` - 查看你的discord使用者ID\n"
+        "`！查看記憶` - 查看最近的記憶\n"
+        "`！查看聊天次數` - 看你還剩下多少聊天次數"
     )
     await ctx.send(text)
 
@@ -380,29 +450,102 @@ async def 聊天(ctx, *, question: str):
     await ctx.send(answer)
 # --------------------------------------------------------------------
 
-
 @bot.command()
-async def 提醒(ctx, time_str: str, *, reminder_text: str):
+async def 提醒(ctx, *args):
     tz = pytz.timezone("Asia/Taipei")
     now = datetime.now(tz)
-    try:
-        hour, minute = map(int, time_str.split(":"))
-    except Exception:
-        await ctx.send("時間格式錯誤，請使用 HH:MM 格式 (例如 19:00)")
+
+    if len(args) < 2:
+        await ctx.send("❗ 格式錯誤，請使用：`！提醒 HH:MM 訊息` 或 `！提醒 MM/DD HH:MM 訊息`")
         return
 
-    scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if scheduled < now:
-        scheduled += timedelta(days=1)
+    # 判斷是 HH:MM 還是 MM/DD HH:MM
+    try:
+        if ":" in args[0] and "/" not in args[0]:
+            # 格式：HH:MM + 訊息
+            hour, minute = map(int, args[0].split(":"))
+            scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if scheduled < now:
+                scheduled += timedelta(days=1)
+            reminder_text = " ".join(args[1:])
+        elif "/" in args[0] and ":" in args[1]:
+            # 格式：MM/DD HH:MM + 訊息
+            month, day = map(int, args[0].split("/"))
+            hour, minute = map(int, args[1].split(":"))
+            scheduled = tz.localize(datetime(now.year, month, day, hour, minute))
+            reminder_text = " ".join(args[2:])
+        else:
+            raise ValueError
+    except Exception:
+        await ctx.send("❗ 時間格式錯誤，請使用 `HH:MM` 或 `MM/DD HH:MM` 格式，例如 `！提醒 05/11 12:00 考試`")
+        return
 
+    # 判斷是否為每日提醒（每天 開頭）
+    if reminder_text.startswith("每天 "):
+        repeat = 1
+        reminder_text = reminder_text[3:].strip()
+    else:
+        repeat = 0
+
+    # 寫入資料庫
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO reminders (user_id, scheduled, reminder_text) VALUES (?, ?, ?)",
-                   (str(ctx.author.id), scheduled.isoformat(), reminder_text))
+    cursor.execute(
+        "INSERT INTO reminders (user_id, scheduled, reminder_text, repeat) VALUES (?, ?, ?, ?)",
+        (str(ctx.author.id), scheduled.isoformat(), reminder_text, repeat)
+    )
     conn.commit()
     conn.close()
 
-    await ctx.send(f"提醒已設定，將在 {scheduled.strftime('%Y-%m-%d %H:%M')} 提醒你：{reminder_text}")
+    repeat_text = "（每天提醒）" if repeat else "（僅提醒一次）"
+    await ctx.send(f"✅ 提醒已設定：{scheduled.strftime('%Y-%m-%d %H:%M')} 提醒你：{reminder_text} {repeat_text}")
+
+@bot.command()
+async def 查看已有提醒(ctx):
+    user_id = str(ctx.author.id)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, scheduled, reminder_text, repeat
+        FROM reminders
+        WHERE user_id = ?
+        ORDER BY scheduled ASC
+    """, (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        await ctx.send("你目前沒有任何提醒事項喔～")
+        return
+
+    lines = []
+    for idx, (reminder_id, scheduled, text, repeat) in enumerate(rows, start=1):
+        time_str = datetime.fromisoformat(scheduled).strftime("%Y-%m-%d %H:%M")
+        mode = "每天" if repeat else "僅一次"
+        lines.append(f"{reminder_id}. {time_str}（{mode}）：{text}")
+
+    content = "\n".join(lines)
+    await ctx.send(f"以下是你目前設定的提醒（使用 `！刪除提醒 編號` 可刪除）：\n{content[:1900]}")
+
+@bot.command()
+async def 刪除提醒(ctx, reminder_id: int):
+    user_id = str(ctx.author.id)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM reminders WHERE id = ? AND user_id = ?", (reminder_id, user_id))
+    result = cursor.fetchone()
+
+    if not result:
+        await ctx.send(f"找不到編號為 {reminder_id} 的提醒，請確認你是否輸入正確。")
+        conn.close()
+        return
+
+    cursor.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+    conn.commit()
+    conn.close()
+
+    await ctx.send(f"已刪除提醒（編號 {reminder_id}）。")
 
 @bot.command()
 async def 查我ID(ctx):
@@ -424,6 +567,17 @@ async def 查看記憶(ctx):
     content = "\n\n".join(r[0] for r in rows)
     await ctx.send(f"以下為你最近的記憶摘要：\n{content[:1900]}")  # Discord 限制
 
+@bot.command(name="查看聊天次數", aliases=["！查看聊天次數"])
+async def check_usage(ctx):
+    used_req  = get_today_usage()
+    used_chat = used_req // REQUESTS_PER_CHAT
+    remain_req  = max(DAILY_LIMIT - used_req, 0)
+    remain_chat = remain_req // REQUESTS_PER_CHAT
+    await ctx.send(
+        f"今天 00:00 起：\n"
+        f" • 已用 **{used_req}/{DAILY_LIMIT}** 次 API（≈ {used_chat} 次聊天）\n"
+        f" • 剩餘 **{remain_req}** 次（≈ {remain_chat} 次聊天）"
+    )
 
 if __name__ == "__main__":
     bot.run(os.getenv("DISCORD_TOKEN"))
