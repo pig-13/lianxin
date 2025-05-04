@@ -24,3 +24,12 @@ def get_character_by_user_id(user_id):
         "extra": row[10],
     }
 
+import sqlite3
+
+def get_latest_memory_id():
+    conn = sqlite3.connect("muichiro_bot.db")
+    cur = conn.cursor()
+    cur.execute("SELECT MAX(id) FROM memories WHERE role='memory'")
+    result = cur.fetchone()
+    conn.close()
+    return result[0] if result and result[0] is not None else 0

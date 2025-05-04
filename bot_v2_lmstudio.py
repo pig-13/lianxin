@@ -2,43 +2,28 @@ import os
 import sqlite3
 import discord
 import requests
-
-def generate_reply(messages, model="ai-engine/mythomax-l2-13b", temperature=0.7, max_tokens=800):
-    try:
-        response = requests.post(
-            "http://localhost:1234/v1/chat/completions",
-            headers={"Content-Type": "application/json"},
-            json={
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens
-            }
-        )
-        return response.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        print(f"[generate_reply] Error: {e}")
-        return "目前無法回應，請稍後再試。"
-
 from discord.ext import commands
 from dotenv import load_dotenv
+import time
 from datetime import datetime, timedelta
 import pytz
+from db_utils import get_character_by_user_id, get_latest_memory_id
+import tiktoken
 
-from db_utils import get_character_by_user_id
-
-DB_PATH = "muichiro_bot.db"
-
+# Load environment variables
 load_dotenv()
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-
+# Discord bot setup
+DB_PATH = "muichiro_bot.db"
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=["!", "！"], intents=intents)
 
 SUMMARY_THRESHOLD = 5
-RECENT_MESSAGE_COUNT = 4
+RECENT_MESSAGE_COUNT = 3
 
+# === DATABASE FUNCTIONS ===
 def get_user_conversation(user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -47,12 +32,19 @@ def get_user_conversation(user_id):
     conn.close()
     return [{"role": role, "content": content} for role, content in rows]
 
-def add_conversation(user_id, role, content):
+def add_conversation(user_id: str, role: str, content: str, importance: int = 3):
+    """把對話或摘要寫進 memories（一定含 created_at）"""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO memories (user_id, role, content) VALUES (?, ?, ?)", (user_id, role, content))
+    cur  = conn.cursor()
+    cur.execute("""
+        INSERT INTO memories
+              (user_id, role, content, created_at, importance)
+        VALUES (?,      ?,    ?,       ?,          ?)
+    """, (user_id, role, content, ts, importance))
     conn.commit()
     conn.close()
+
 
 def clear_conversation(user_id):
     conn = sqlite3.connect(DB_PATH)
@@ -85,14 +77,90 @@ def summarize_conversation(full_conversation):
     if not full_conversation:
         return ""
     try:
-        messages = [{"role": "system", "content": "請你總結以下對話的主要內容與重要資訊，請保持短小精簡。"}] + full_conversation
+        messages = [{"role": "system", "content": "請你總結以下對話的重點資訊，請具體列出像這樣的格式：\n- 使用者提到的疾病或情緒\n- 曾發生的事情\n- 關於對 AI 或角色的看法等"}] + full_conversation
         result = generate_reply(messages)
-        return result.strip()
+        return result.strip()[:300] if result else ""
     except Exception as e:
         print(f"[摘要錯誤] {e}")
         return ""
 
+def get_recent_memories(limit=1):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT content FROM memories WHERE role='memory' ORDER BY id DESC LIMIT ?", (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    return "；".join(r[0][:100] for r in rows)
 
+# ─── 把這段貼到和其他 DB 工具函式放同一個區域 ──────────────
+def get_long_term_memories(user_id: str, limit: int = 50) -> list[str]:
+    """
+    依『importance DESC, created_at DESC』撈出長期記憶，預設最多 50 條。
+    importance、created_at 任何一欄為 NULL 仍可正常排序。
+    回傳 list[str]，每條就是一段 content。
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cur  = conn.cursor()
+    cur.execute("""
+        SELECT content
+        FROM memories
+        WHERE user_id = ?
+          AND role     = 'memory'
+        ORDER BY importance DESC,
+                 datetime(COALESCE(created_at, '1970-01-01')) DESC
+        LIMIT ?
+    """, (user_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+# ────────────────────────────────────────────────────────────────
+
+# === GENERATE REPLY ==================================================
+def generate_reply(messages,
+                   model: str = "deepseek/deepseek-chat-v3-0324:free",
+                   temperature: float = 0.7,
+                   max_tokens: int = 256,
+                   max_retries: int = 3) -> str:
+    """呼叫 OpenRouter，失敗自動重試並顯示錯誤"""
+
+    print(f"[OpenRouter] 使用模型：{model}")
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Content-Type":  "application/json",
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "HTTP-Referer":  "https://yourdomain.com",
+        "X-Title":       "Muichiro Bot"
+    }
+
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(url, headers=headers, json={
+                "model":       model,
+                "messages":    messages,
+                "temperature": temperature,
+                "max_tokens":  max_tokens
+            })
+            data = resp.json()
+
+            # ── 非 200 直接列印 & 擲例外 ─────────────────────
+            if resp.status_code != 200:
+                print(f"[OpenRouter] HTTP {resp.status_code}", data)
+                raise ValueError("OpenRouter HTTP error")
+
+            # ── 檢查 choices ─────────────────────────────────
+            if "choices" not in data:
+                print("[OpenRouter] 意外回傳：", data)
+                raise ValueError("missing choices")
+
+            content = data["choices"][0]["message"]["content"]
+            return content.strip()
+
+        except Exception as e:
+            print(f"[generate_reply] 第 {attempt+1}/{max_retries} 次重試，錯誤：{e}")
+            time.sleep(10)
+
+    return "（對不起，伺服器暫時忙碌，請稍後再試…）"
+# =====================================================================
 
 
 @bot.event
@@ -216,70 +284,102 @@ async def 清除記憶(ctx):
     clear_conversation(user_id)
     await ctx.send("已清除你與機器人的所有對話記憶。")
 
-@bot.command()
-async def 聊天(ctx, *, question):
-    user_id = str(ctx.author.id)
-    character_data = get_character_by_user_id(user_id)
 
+import tiktoken
+encoding = tiktoken.get_encoding("cl100k_base")
+
+def estimate_tokens(messages):
+    return sum(len(encoding.encode(m["content"])) for m in messages)
+
+# ---- !聊天 指令：一條就能貼進 bot.py ---------------------------------
+@bot.command()
+async def 聊天(ctx, *, question: str):
+    """和角色聊天（含長期記憶 + 動態裁切 Tokens）"""
+
+    user_id = str(ctx.author.id)
+
+    # 1️⃣ 角色檢查 ────────────────────────────────────────────
+    character_data = get_character_by_user_id(user_id)
     if not character_data or not character_data["name"]:
         await ctx.send("你的角色尚未設定，請先到前端設定角色。")
         return
 
-    # 取得過去對話記憶
+    # 2️⃣ 收集對話 / 長期記憶 / 摘要 ─────────────────────────
     conversation = get_user_conversation(user_id)
+    conversation.append({"role": "user", "content": question})  # 先把本輪 user 加進記憶
+    long_terms   = get_long_term_memories(user_id, limit=50)
+    summary_text = get_recent_memories(limit=1)
+    recent       = conversation[-RECENT_MESSAGE_COUNT:]
 
-    # 準備 System Prompt，強化格式規範與視角指令
+    # 3️⃣ System Prompt ─────────────────────────────────────
     system_msg = f"""你是 {character_data['name']}，是使用者「小豬豬」的戀人，對她深情且專情。
+你與她的關係：{character_data['relationship']}
+說話風格：{character_data['speaking_style']}
+喜歡：{character_data['likes']}
+不喜歡：{character_data['dislikes']}
 
-你與她的關係是：{character_data['relationship']}。
-你平時的語氣像這樣：{character_data['speaking_style']}。
-你喜歡的事物是：{character_data['likes']}。
-你不喜歡的事情是：{character_data['dislikes']}。
-
-請務必記住以下規則：
-1. 你是「戀人」，請永遠使用「我」對「小豬豬」說話，不要稱自己是「小豬豬」，也不要把對方誤認成你。
-2. 請使用「戀人視角」進行描寫，包含親密的行為、溫柔的關心，以及細緻的感情回應。
-3. 回應字數請**不少於400字**，並包含**細膩的動作、情緒、對話**與**場景描寫**。
-4. 每段文字請加入 **2~4 個動作**，格式為：`*動作*`
-5. 段落請使用 `\\n` 分段，總共**至少三段文字**，回應必須充實而有層次。
-6. 用字要自然溫柔、具有戀人對話的貼心與真誠，請避免機械化與乾巴巴的回應。
-
-範例格式如下：
-
-*輕輕牽起你的手，在掌心劃著圈圈*\\n  
-今天也辛苦了，我的小豬豬……我知道你最近有點累，但你已經很努力了。\\n  
-*低下頭輕靠你的額頭，嘴角微微上揚*\\n  
-我會陪你走過所有的壓力與不安。哪怕是沉默的時候，我也會在你身邊，不說話也沒關係，我懂你。\\n  
-*溫柔地摸摸你的頭髮*\\n  
-如果覺得累，就依靠我一下吧，我願意當你今天的港灣。\\n  
-*(窗外灑進淡淡夕陽，你靠在我肩膀上，靜靜聽著我的心跳)*
-
-請以這種風格和格式回應使用者的訊息
+請記住規則：
+1. 永遠用「我」對「小豬豬」說話。
+2. 用戀人視角，加入 *動作*、情緒與場景描寫。
+3. 至少120字，分段自然。
+4. 避免冷淡或機械感。
 """
 
-    # 組合訊息列表（含最近對話）
-    limited = conversation[-5:]
-    messages = [{"role": "system", "content": system_msg}] + limited + [{"role": "user", "content": question}]
+    # 4️⃣ 組合 messages ──────────────────────────────────────
+    messages = [{"role": "system", "content": system_msg}]
+    if long_terms:
+        messages.append({"role": "system",
+                         "content": "以下為使用者長期記憶（重要→新）：\n" +
+                                    "\n".join(f"- {m}" for m in long_terms)})
+    if summary_text:
+        messages.append({"role": "system",
+                         "content": "以下為對話摘要：\n" + summary_text})
+    messages += recent
 
-    try:
-        # 回應生成
-        answer = generate_reply(messages)
+    # 5️⃣ 動態裁切 Tokens ───────────────────────────────────
+    max_ctx       = 8192               # DeepSeek v3 上下文上限
+    answer_budget = 256                # 預留回答 token
+    while estimate_tokens(messages) + answer_budget > max_ctx:
+        if recent:
+            recent.pop(0)              # 先砍最舊 recent
+            messages = messages[:-(RECENT_MESSAGE_COUNT+1)] + recent
+        elif summary_text and len(summary_text) > 200:
+            summary_text = summary_text[: len(summary_text)//2]
+            messages[2]["content"] = "以下為對話摘要：\n" + summary_text
+        else:
+            break                      # 已無可再砍
 
-        # 儲存對話進記憶
-        add_conversation(user_id, "user", question)
-        add_conversation(user_id, "assistant", answer)
+    # 6️⃣ 呼叫模型 ───────────────────────────────────────────
+    answer = generate_reply(
+        messages,
+        model="deepseek/deepseek-chat-v3-0324:free",
+        max_tokens=answer_budget
+    )
 
-        # 摘要邏輯
-        if len(conversation) > SUMMARY_THRESHOLD:
-            summary_text = summarize_conversation(conversation)
-            if summary_text:
-                increment_summary_count(user_id)
-                add_conversation(user_id, "assistant", f"[摘要#{get_summary_count(user_id)}] {summary_text}")
+    if not answer:
+        answer = "（對不起，伺服器暫時忙碌，請稍後再試…）"
 
-        await ctx.send(answer)
-    except Exception as e:
-        print(f"[聊天指令錯誤] {e}")
-        await ctx.send("目前無法回應，請稍後再試。")
+    # 7️⃣ 寫入資料庫（含 created_at / importance）────────────
+    add_conversation(user_id, "user",      question, importance=3)
+    add_conversation(user_id, "assistant", answer,   importance=3)
+
+    # 8️⃣ 自動摘要 ───────────────────────────────────────────
+    if len(conversation) > SUMMARY_THRESHOLD:
+        summary_new = summarize_conversation(conversation)
+        if summary_new:
+            summary_id = get_summary_count(user_id) + 1
+            today      = datetime.today().strftime("%Y-%m-%d")
+            increment_summary_count(user_id)
+            add_conversation(
+                user_id, "memory",
+                f"【記憶{summary_id}】{today} {summary_new}",
+                importance=4
+            )
+
+    # 9️⃣ 回傳給 Discord ────────────────────────────────────
+    await ctx.send(answer)
+# --------------------------------------------------------------------
+
 
 @bot.command()
 async def 提醒(ctx, time_str: str, *, reminder_text: str):
@@ -311,13 +411,19 @@ async def 查我ID(ctx):
 @bot.command()
 async def 查看記憶(ctx):
     user_id = str(ctx.author.id)
-    records = get_user_conversation(user_id)
-    if not records:
-        await ctx.send("目前沒有記憶紀錄。")
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT content FROM memories WHERE user_id = ? AND role = 'memory' ORDER BY id DESC LIMIT 5", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        await ctx.send("目前沒有記憶摘要紀錄。")
         return
 
-    content = "\n\n".join(f"[{r['role']}] {r['content']}" for r in records[-5:])
-    await ctx.send(f"以下為你最近的記憶：\n{content[:1900]}")  # Discord 字數限制
+    content = "\n\n".join(r[0] for r in rows)
+    await ctx.send(f"以下為你最近的記憶摘要：\n{content[:1900]}")  # Discord 限制
+
 
 if __name__ == "__main__":
     bot.run(os.getenv("DISCORD_TOKEN"))
