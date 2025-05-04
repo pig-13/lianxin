@@ -33,7 +33,6 @@ def get_user_conversation(user_id):
     return [{"role": role, "content": content} for role, content in rows]
 
 def add_conversation(user_id: str, role: str, content: str, importance: int = 3):
-    """把對話或摘要寫進 memories（一定含 created_at）"""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = sqlite3.connect(DB_PATH)
     cur  = conn.cursor()
@@ -45,33 +44,27 @@ def add_conversation(user_id: str, role: str, content: str, importance: int = 3)
     conn.commit()
     conn.close()
 
-
 def clear_conversation(user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
-    cursor.execute("DELETE FROM summary_counts WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
 
 def get_summary_count(user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT count FROM summary_counts WHERE user_id = ?", (user_id,))
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM memories
+        WHERE user_id = ? AND role = 'memory'
+    """, (user_id,))
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else 0
 
-def increment_summary_count(user_id):
-    count = get_summary_count(user_id)
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    if count == 0:
-        cursor.execute("INSERT INTO summary_counts (user_id, count) VALUES (?, 1)", (user_id,))
-    else:
-        cursor.execute("UPDATE summary_counts SET count = ? WHERE user_id = ?", (count + 1, user_id))
-    conn.commit()
-    conn.close()
+# ← 這邊原本的 increment_summary_count 已完全移除
+
 
 def summarize_conversation(full_conversation):
     if not full_conversation:
@@ -79,7 +72,9 @@ def summarize_conversation(full_conversation):
     try:
         messages = [{"role": "system", "content": "請你總結以下對話的重點資訊，請具體列出像這樣的格式：\n- 使用者提到的疾病或情緒\n- 曾發生的事情\n- 關於對 AI 或角色的看法等"}] + full_conversation
         result = generate_reply(messages)
+        print("📦 摘要模型回傳內容：", result)
         return result.strip()[:300] if result else ""
+
     except Exception as e:
         print(f"[摘要錯誤] {e}")
         return ""
@@ -94,11 +89,6 @@ def get_recent_memories(limit=1):
 
 # ─── 把這段貼到和其他 DB 工具函式放同一個區域 ──────────────
 def get_long_term_memories(user_id: str, limit: int = 50) -> list[str]:
-    """
-    依『importance DESC, created_at DESC』撈出長期記憶，預設最多 50 條。
-    importance、created_at 任何一欄為 NULL 仍可正常排序。
-    回傳 list[str]，每條就是一段 content。
-    """
     conn = sqlite3.connect(DB_PATH)
     cur  = conn.cursor()
     cur.execute("""
@@ -245,7 +235,8 @@ async def 指令(ctx):
         "`！提醒 <MM/DD HH:MM> <訊息>` - 指定日期提醒一次，例如：`！提醒 05/11 12:00 考試`\n"
         "`！查看已有提醒` - 看你目前已經設定了那些提醒\n"
         "`！刪除提醒 <編號>` - 刪除某個提醒（可先用 `！查看已有提醒` 查看編號）\n"
-        "`！清除記憶` - 清除你與角色的對話記憶\n"
+        "`！重置記憶` - 重置所有！！！你與角色的對話記憶\n"
+        "`！刪除記憶` - 刪除特定你與角色的對話記憶\n"
         "`！查我ID` - 查看你的discord使用者ID\n"
         "`！查看記憶` - 查看最近的記憶\n"
         "`！查看聊天次數` - 看你還剩下多少聊天次數"
@@ -349,11 +340,33 @@ async def 重設角色(ctx):
     await ctx.send("你的角色資料已重置，請到前端重新設定。")
 
 @bot.command()
-async def 清除記憶(ctx):
+async def 重置記憶(ctx):
     user_id = str(ctx.author.id)
     clear_conversation(user_id)
     await ctx.send("已清除你與機器人的所有對話記憶。")
 
+@bot.command()
+async def 刪除記憶(ctx, 記憶編號: int):
+    user_id = str(ctx.author.id)
+    prefix = f"【記憶{記憶編號}】"
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id FROM memories
+        WHERE user_id = ? AND role = 'memory' AND content LIKE ?
+    """, (user_id, f"{prefix}%"))
+    result = cursor.fetchone()
+
+    if not result:
+        await ctx.send(f"❗ 找不到「記憶{記憶編號}」，請確認是否輸入正確。")
+        conn.close()
+        return
+
+    cursor.execute("DELETE FROM memories WHERE id = ?", (result[0],))
+    conn.commit()
+    conn.close()
+    await ctx.send(f"🗑️ 已成功刪除記憶（記憶{記憶編號}）。")
 
 import tiktoken
 encoding = tiktoken.get_encoding("cl100k_base")
@@ -382,14 +395,14 @@ async def 聊天(ctx, *, question: str):
     recent       = conversation[-RECENT_MESSAGE_COUNT:]
 
     # 3️⃣ System Prompt ─────────────────────────────────────
-    system_msg = f"""你是 {character_data['name']}，是使用者「小豬豬」的戀人，對她深情且專情。
+    system_msg = f"""你是 {character_data['name']}，是使用者的戀人，對她深情且專情。
 你與她的關係：{character_data['relationship']}
 說話風格：{character_data['speaking_style']}
 喜歡：{character_data['likes']}
 不喜歡：{character_data['dislikes']}
 
 請記住規則：
-1. 永遠用「我」對「小豬豬」說話。
+1. 永遠用「我」對「使用者」說話。
 2. 用戀人視角，加入 *動作*、情緒與場景描寫。
 3. 至少120字，分段自然。
 4. 避免冷淡或機械感。
@@ -435,17 +448,20 @@ async def 聊天(ctx, *, question: str):
 
     # 8️⃣ 自動摘要 ───────────────────────────────────────────
     if len(conversation) > SUMMARY_THRESHOLD:
+        print(f"🧠 嘗試生成摘要（共 {len(conversation)} 則對話）")
         summary_new = summarize_conversation(conversation)
-        if summary_new:
-            summary_id = get_summary_count(user_id) + 1
-            today      = datetime.today().strftime("%Y-%m-%d")
-            increment_summary_count(user_id)
+        summary_id = get_summary_count(user_id) + 1
+        today = datetime.today().strftime("%Y-%m-%d")
+
+        if summary_new and "請稍後再試" not in summary_new and "伺服器暫時忙碌" not in summary_new:
+            print(f"✅ 摘要成功：{summary_new[:100]}...")
             add_conversation(
                 user_id, "memory",
                 f"【記憶{summary_id}】{today} {summary_new}",
                 importance=4
             )
-
+        else:
+            print(f"❌ 摘要失敗：{summary_new[:100]}..." if summary_new else "❌ 摘要失敗：沒有收到回傳內容")
     # 9️⃣ 回傳給 Discord ────────────────────────────────────
     await ctx.send(answer)
 # --------------------------------------------------------------------
