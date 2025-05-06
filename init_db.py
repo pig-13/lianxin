@@ -32,7 +32,6 @@ CREATE TABLE IF NOT EXISTS memories (
     content TEXT,
     created_at TEXT,
     importance INTEGER,
-    hash TEXT,
     embedding BLOB
 );
 """)

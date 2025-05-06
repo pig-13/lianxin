@@ -286,6 +286,9 @@ async def generate_reply(
                     if "choices" not in data:
                         print("[OpenRouter] 回傳中無 choices：", raw[:200])
                         raise RuntimeError("missing choices")
+                    
+                    print("[OpenRouter 回傳 JSON] =")
+                    print(json.dumps(data, indent=2, ensure_ascii=False))
 
                     return data["choices"][0]["message"]["content"].strip()
 
