@@ -1,4 +1,16 @@
+# Discord 機器人
 discord.py
-python-dotenv
+
+# 語意向量轉換
+sentence-transformers
+faiss-cpu
+numpy
+
+# 調用 Together API
 together
+
+# dotenv 環境變數
+python-dotenv
+
+# 時區（如果你有用到提醒功能）
 pytz
