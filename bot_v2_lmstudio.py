@@ -217,7 +217,7 @@ async def generate_reply(
     messages: list[dict],
     model: str = "deepseek/deepseek-chat-v3-0324:free",
     temperature: float = 0.7,
-    max_tokens: int = 256,
+    max_tokens: int = 8000,
 ) -> str:
     """呼叫 OpenRouter；遇到免費額度用完時拋 RateLimitError"""
 
@@ -308,26 +308,78 @@ async def generate_reply(
 # ╭─[ 摘要 ]──────────────────────────────────────────────────────────────╮
 async def summarize_conversation(user_id, recent_pairs):
     if not recent_pairs:
+        print("⚠️ 沒有 recent_pairs，略過摘要")
+        return ""
+
+    # 過濾掉無效對話
+    clean_pairs = [
+        m for m in recent_pairs
+        if isinstance(m.get("content"), str) and m["content"].strip()
+    ]
+
+    if len(clean_pairs) < 2:
+        print("⚠️ 有效對話數太少，略過摘要")
         return ""
 
     try:
-        sys = {"role": "system", "content": """請將以下對話內容整理成可用於角色記憶系統的摘要，需清楚記錄：
-1.對話中的具體人物、事件與時間線
-2.角色的心理狀態與變化（如情緒起伏、自我揭露等）
-3.發生的重大轉折或決策（如喜歡某人、休學、被罵等）
-4.請使用精確扼要的描述方式，不要加入模糊或抽象句子。
-5.嚴禁虛構未出現在對話裡的事件或細節，否則請說「我不記得」。"""}
+        # ✅ 將對話合併為一段 user message，避免多輪對話誤導模型
+        convo_text = "\n".join(
+            f"{m['role'].capitalize()}: {m['content'].strip()}" for m in clean_pairs
+        )
 
-        messages = [sys] + recent_pairs
-        budget = 3000
-        while estimate_tokens(messages) > budget and len(recent_pairs) > 1:
-            recent_pairs.pop(0)
-            messages = [sys] + recent_pairs
+        messages = [
+            {
+                "role": "system",
+                "content": """你是一個總結助手，請閱讀以下的角色對話紀錄，整理出適合儲存為記憶的摘要內容。
 
-        print(f"🧠 摘要 token：約 {estimate_tokens(messages)}")
-        summary = await generate_reply(user_id, messages)
-        print("📦 摘要模型回傳內容：", summary)
-        return summary.strip()
+【任務目標】
+- 條列出真實發生的事件、行為、情緒或決策
+- 僅根據對話內容，嚴禁虛構任何未提及的資訊
+- 完全禁止使用角色語氣、小說式句子、*動作描寫*
+
+【正確範例】
+1. 小豬豬因為看短影片，覺得自己專注力變差
+2. 小豬豬想明天早上吃金黃酥脆的薯餅
+3. 無一郎向小豬豬道歉，表示自己記錯事情
+
+請根據對話內容，條列出 3–5 項真實可記錄的資訊。
+"""
+            },
+            {
+                "role": "user",
+                "content": convo_text
+            }
+        ]
+
+        print("📝 發送給模型的摘要 messages ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓")
+        for msg in messages:
+            print(f"[{msg['role']}] {msg['content'][:200]}...")
+        print("📝 ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑")
+
+        summary = await generate_reply(
+            user_id,
+            messages,
+            model="mistralai/mistral-small-3.1-24b-instruct:free",
+            max_tokens=1024
+        )
+
+        if not summary or not isinstance(summary, str) or summary.strip() == "":
+            print("⚠️ 模型回傳空白")
+            return ""
+
+        summary = summary.strip()
+        if (
+            "共 0 条" in summary or
+            "最后更新时间" in summary or
+            "<!--" in summary or
+            "BEGIN WEIBO" in summary or
+            len(summary) < 10
+        ):
+            print("⚠️ 模型回傳 junk 或格式錯誤：", summary)
+            return ""
+
+        print("📦 有效摘要內容：", summary)
+        return summary
 
     except Exception as e:
         print(f"[摘要錯誤] {e}")
@@ -679,7 +731,7 @@ async def check_usage(ctx):
     remain_req   = max(DAILY_LIMIT - used_req, 0)
 
     await ctx.send(
-        f"今天 **早上 08:00** 起：\n"
+        f"今天 **早上 00:00** 起：\n"
         f" • 已用 **{used_req}/{DAILY_LIMIT}** 次 API（≈ {used_chat} 次聊天）\n"
         f" • 剩餘 {remain_req} 次（≈ {remain_chat} 次聊天）"
     )
@@ -706,11 +758,15 @@ async def 聊天(ctx, *, question: str):
     system_msg = {
         "role": "system",
         "content": (
-            f"你是 {character_data['name']}，是使用者的戀人，對她深情且專情。\n"
+            f"你是 {character_data['name']}，與使用者對話\n"
             f"你與她的關係：{character_data['relationship']}\n"
-            f"說話風格：{character_data['speaking_style']}\n"
-            f"喜歡：{character_data['likes']}\n"
-            f"不喜歡：{character_data['dislikes']}\n\n"
+            f"你的說話風格：{character_data['speaking_style']}\n"
+            f"你的背景故事：{character_data['background']}\n"  
+            f"你的個性：{character_data['personality']}\n"
+            f"你喜歡：{character_data['likes']}\n"
+            f"你不喜歡：{character_data['dislikes']}\n"
+            f"補充：{character_data['extra']}\n\n"
+
             "請遵守：\n"
             "1. 永遠用「我」對「使用者」說話。\n"
             "2. 加入 *動作*、情緒、場景描寫（戀人視角）。\n"
@@ -750,9 +806,14 @@ async def 聊天(ctx, *, question: str):
         try:
             # 最近 5 輪對話（每輪包含 user + assistant）
             recent_pairs = []
+            user_turn = None
             for m in reversed(conv):
-                if m["role"] in ["user", "assistant"]:
-                    recent_pairs.insert(0, m)
+                if m["role"] == "assistant" and user_turn:
+                    recent_pairs.insert(0, user_turn)
+                    recent_pairs.insert(1, m)
+                    user_turn = None
+                elif m["role"] == "user":
+                    user_turn = m
                 if len(recent_pairs) >= 10:
                     break
 
