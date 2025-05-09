@@ -111,6 +111,22 @@ def get_long_term_memories(user_id: str, limit: int = 50):
         """, (user_id, limit))
         rows = cur.fetchall()
     return [r[0] for r in rows]
+
+def insert_memory_and_return_id(user_id: str, content: str, importance: int = 4) -> int:
+    if not content or content.strip() == "":
+        print("❌ 嘗試插入空白摘要，略過 insert")
+        return -1  # or raise ValueError
+    ts = datetime.now(tz).strftime("%F %T")
+    emb = model_embed.encode([content])[0].astype(np.float32).tobytes()
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO memories (user_id, role, content, created_at, importance, embedding)
+            VALUES (?, 'memory', ?, ?, ?, ?)
+        """, (user_id, content, ts, importance, emb))
+        conn.commit()
+        return cur.lastrowid  # ✅ 回傳實際的 ID
+
 # ╰───────────────────────────────────────────────────────────────────────╯
 
 # ╭─[ API‑log：每日計數 ]───────────────────────────────────────────────────╮
@@ -212,6 +228,14 @@ class RateLimitError(RuntimeError):
         self.reset_local = reset_local
 
 
+FORBIDDEN_KEYWORDS = ["试", "众号", "点击", "扫码", "岗", "医"]
+
+def filter_bad_memories(mem_list: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    return [
+        (text, dist) for text, dist in mem_list
+        if not any(keyword in text for keyword in FORBIDDEN_KEYWORDS)
+    ]
+
 async def generate_reply(
     user_id: str,
     messages: list[dict],
@@ -219,25 +243,39 @@ async def generate_reply(
     temperature: float = 0.7,
     max_tokens: int = 8000,
 ) -> str:
-    """呼叫 OpenRouter；遇到免費額度用完時拋 RateLimitError"""
-
     increment_api_counter(REQUESTS_PER_CHAT)
 
-    # 1) 加入語意記憶
-    last_input = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-    mems = get_similar_memories(user_id, last_input, top_k=3, max_distance=1)
+    # 🔹 Step 1: 提取 system prompt + 其餘訊息
+    sys_msg = messages[0]
+    rest_messages = messages[1:]
+
+    # 🔹 Step 2: 用最近幾輪對話組合做語意檢索（比單句更精準）
+    recent_text = "\n".join(
+        m["content"].strip() for m in reversed(rest_messages[-6:])
+        if m["role"] in ("user", "assistant")
+    )
+    mems = get_similar_memories(user_id, recent_text, top_k=3, max_distance=1)
+    mems = filter_bad_memories(mems)
+
+    # 🔹 Step 3: 插入語意記憶區塊（插在 system prompt 之後）
     if mems:
         mem_txt = "\n".join(f"- {t}" for t, _ in mems)
-        messages = [{"role": "system",
-                     "content": "以下是過往記憶，可作背景參考，請勿逐句複製：\n" + mem_txt}
-                    ] + messages
-    # ✅ DEBUG 印出實際撈到的語意記憶
+        memory_block = {
+            "role": "system",
+            "content": "以下是過往記憶，可作背景參考，請勿逐句複製：\n" + mem_txt
+        }
+        messages = [sys_msg, memory_block] + rest_messages
         print("📚 [語意檢索記憶] ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓")
         for idx, (text, dist) in enumerate(mems, 1):
             print(f"{idx}. 相似度距離={dist:.4f}：{text}")
         print("📚 ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑")
+
+    else:
+        messages = [sys_msg] + rest_messages  # 無記憶也要保留原本結構
+
     print(f"🧮 總 token 數：約 {estimate_tokens(messages)}")
 
+    # 🔹 Step 4: 建立 API 請求
     payload = {
         "model":       model,
         "messages":    messages,
@@ -251,9 +289,11 @@ async def generate_reply(
         "X-Title":       "Muichiro Bot",
     }
 
-    async with aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=45)
-    ) as sess:
+    print("🚨 [DEBUG] 傳給 API 的 payload：")
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+
+    # 🔹 Step 5: 發送 API
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45)) as sess:
         for attempt in range(3):
             try:
                 async with sess.post(
@@ -261,57 +301,92 @@ async def generate_reply(
                     json=payload, headers=headers
                 ) as r:
 
-                    raw = await r.text()          # 先抓完整回應字串
+                    raw = await r.text()
 
-                    # ── 2) 處理 429：免費額度用完 ────────────────────
                     if r.status == 429:
-                        info     = json.loads(raw)
-                        err_msg  = info["error"]["message"]
-
-                        # 直接顯示「明天 08:00」為重置點
-                        now_local  = datetime.now(tz)
+                        info = json.loads(raw)
+                        err_msg = info["error"]["message"]
+                        now_local = datetime.now(tz)
                         tomorrow_8am = (now_local + timedelta(days=1)).replace(
-                        hour=8, minute=0, second=0, microsecond=0)
+                            hour=8, minute=0, second=0, microsecond=0)
                         reset_str = tomorrow_8am.strftime("%m-%d 08:00")
-
                         raise RateLimitError(err_msg, reset_str)
-                    # ────────────────────────────────────────────────
 
                     if r.status != 200:
-                        print(f"[OpenRouter] HTTP {r.status}\n"
-                              f"{textwrap.shorten(raw, 150)}")
+                        print(f"[OpenRouter] HTTP {r.status}\n{textwrap.shorten(raw, 150)}")
                         raise RuntimeError(f"http {r.status}")
 
                     data = json.loads(raw)
                     if "choices" not in data:
                         print("[OpenRouter] 回傳中無 choices：", raw[:200])
                         raise RuntimeError("missing choices")
-                    
+
                     print("[OpenRouter 回傳 JSON] =")
                     print(json.dumps(data, indent=2, ensure_ascii=False))
 
-                    return data["choices"][0]["message"]["content"].strip()
+                    reply = data["choices"][0]["message"]["content"].strip()
+
+                    # 🔹 Step 6: 過濾空內容與敏感詞
+                    if not reply or any(k in reply for k in FORBIDDEN_KEYWORDS):
+                        print("❌ 回傳內容為空或含有敏感關鍵字，略過")
+                        return "(模型回應異常，已忽略本輪內容)"
+
+                    return reply
 
             except RateLimitError:
-                # 往上丟給呼叫端處理（聊天 / 摘要）
                 raise
             except Exception as e:
                 import traceback
                 print(f"[generate_reply] retry {attempt+1}/3 ➜ {repr(e)}")
-                traceback.print_exc()  # ★ 顯示完整 traceback
+                traceback.print_exc()
                 await asyncio.sleep(5)
-
 
     raise RuntimeError("three tries failed")
 # ╰───────────────────────────────────────────────────────────────────────╯
+#簡易版總結摘要用的reply
+async def generate_summary_reply(
+    user_id: str,
+    messages: list[dict],
+    model: str = "mistralai/mistral-small-3.1-24b-instruct:free",
+    max_tokens: int = 1024,
+) -> str:
+    increment_api_counter(REQUESTS_PER_CHAT)
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2,  # ✅ 更穩定中性
+        "max_tokens": max_tokens,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "HTTP-Referer": "https://muichiro.local",
+        "X-Title": "Muichiro Summary Bot",
+    }
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45)) as sess:
+        async with sess.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            json=payload, headers=headers
+        ) as r:
+            raw = await r.text()
+            data = json.loads(raw)
+
+            if "choices" not in data or not data["choices"]:
+                print("⚠️ 回傳格式錯誤或空白")
+                return ""
+
+            reply = data["choices"][0]["message"]["content"].strip()
+            return reply
 
 # ╭─[ 摘要 ]──────────────────────────────────────────────────────────────╮
-async def summarize_conversation(user_id, recent_pairs):
+async def summarize_conversation(user_id: str, recent_pairs: list[dict]) -> str:
     if not recent_pairs:
         print("⚠️ 沒有 recent_pairs，略過摘要")
         return ""
 
-    # 過濾掉無效對話
+    # 🔹 過濾無效訊息
     clean_pairs = [
         m for m in recent_pairs
         if isinstance(m.get("content"), str) and m["content"].strip()
@@ -322,28 +397,28 @@ async def summarize_conversation(user_id, recent_pairs):
         return ""
 
     try:
-        # ✅ 將對話合併為一段 user message，避免多輪對話誤導模型
+        # 🔹 合併最近對話為純文字對話紀錄
         convo_text = "\n".join(
-            f"{m['role'].capitalize()}: {m['content'].strip()}" for m in clean_pairs
+            f"{m['role'].capitalize()}: {m['content'].strip()}"
+            for m in clean_pairs
         )
 
+        # 🔹 構造摘要用 Prompt
         messages = [
             {
                 "role": "system",
-                "content": """你是一個總結助手，請閱讀以下的角色對話紀錄，整理出適合儲存為記憶的摘要內容。
-
-【任務目標】
-- 條列出真實發生的事件、行為、情緒或決策
-- 僅根據對話內容，嚴禁虛構任何未提及的資訊
-- 完全禁止使用角色語氣、小說式句子、*動作描寫*
-
-【正確範例】
-1. 小豬豬因為看短影片，覺得自己專注力變差
-2. 小豬豬想明天早上吃金黃酥脆的薯餅
-3. 無一郎向小豬豬道歉，表示自己記錯事情
-
-請根據對話內容，條列出 3–5 項真實可記錄的資訊。
-"""
+                "content": (
+                    "你是一個總結助手，請根據以下對話內容，萃取可儲存為記憶的摘要。\n\n"
+                    "【任務目標】\n"
+                    "- 條列出真實發生的事件、行為、情緒或決策\n"
+                    "- 僅根據對話內容，嚴禁虛構任何未提及的資訊\n"
+                    "- 完全禁止使用角色語氣、小說句式、*動作* 等描述\n\n"
+                    "【正確範例】\n"
+                    "1. 小豬豬因為看短影片，覺得自己專注力變差\n"
+                    "2. 小豬豬想明天早上吃金黃酥脆的薯餅\n"
+                    "3. 無一郎向小豬豬道歉，表示自己記錯事情\n\n"
+                    "請條列出 3–5 項真實資訊："
+                )
             },
             {
                 "role": "user",
@@ -353,21 +428,24 @@ async def summarize_conversation(user_id, recent_pairs):
 
         print("📝 發送給模型的摘要 messages ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓")
         for msg in messages:
-            print(f"[{msg['role']}] {msg['content'][:200]}...")
+            snippet = msg["content"][:200].replace("\n", "\\n")
+            print(f"[{msg['role']}] {snippet}...")
         print("📝 ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑")
 
-        summary = await generate_reply(
+        summary = await generate_summary_reply(
             user_id,
             messages,
             model="mistralai/mistral-small-3.1-24b-instruct:free",
             max_tokens=1024
         )
 
+        # 🔹 回傳空白或 junk 防呆
         if not summary or not isinstance(summary, str) or summary.strip() == "":
             print("⚠️ 模型回傳空白")
             return ""
 
         summary = summary.strip()
+
         if (
             "共 0 条" in summary or
             "最后更新时间" in summary or
@@ -780,11 +858,17 @@ async def 聊天(ctx, *, question: str):
 
     # 4) 呼叫生成（捕捉免費額度已用完）
     try:
-        answer = await generate_reply(
-            user_id, messages,
-            model="deepseek/deepseek-chat-v3-0324:free",
-            max_tokens=256
-        )
+        async with ctx.typing():
+            answer = await generate_reply(
+                user_id, messages,
+                model="deepseek/deepseek-chat-v3-0324:free",
+                max_tokens=256
+            )
+
+        if not answer or not answer.strip():
+            await ctx.send("⚠️ 模型沒有回應內容，請稍後再試。")
+            return
+
     except RateLimitError as e:
         # 免費額度用完 → 直接告知使用者並結束
         await ctx.send(f"（OpenRouter：{e}；免費額度將在 **{e.reset_local}** 重置）")
@@ -804,33 +888,64 @@ async def 聊天(ctx, *, question: str):
 
     if used_chat > 0 and used_chat % 5 == 0:
         try:
-            # 最近 5 輪對話（每輪包含 user + assistant）
+            # ✅ 過濾對話，避免灌入錯誤資料或 memory 類型
+            conv = [
+            m for m in conv
+            if m["role"] in ("user", "assistant")
+            and isinstance(m.get("content"), str)
+            and m["content"].strip()
+            ]
+            # 擷取最近 5 輪有效對話（user + assistant）
             recent_pairs = []
-            user_turn = None
-            for m in reversed(conv):
-                if m["role"] == "assistant" and user_turn:
-                    recent_pairs.insert(0, user_turn)
-                    recent_pairs.insert(1, m)
-                    user_turn = None
-                elif m["role"] == "user":
-                    user_turn = m
-                if len(recent_pairs) >= 10:
-                    break
+            i = len(conv) - 1
+
+            while i > 0 and len(recent_pairs) < 10:
+                user_msg = conv[i - 1] if i - 1 >= 0 else None
+                assistant_msg = conv[i]
+
+                if (
+                    user_msg
+                    and user_msg["role"] == "user"
+                    and isinstance(user_msg.get("content"), str)
+                    and user_msg["content"].strip()
+                    and assistant_msg["role"] == "assistant"
+                    and isinstance(assistant_msg.get("content"), str)
+                    and assistant_msg["content"].strip()
+                ):
+                    recent_pairs.insert(0, assistant_msg)
+                    recent_pairs.insert(0, user_msg)
+                    i -= 2
+                else:
+                    i -= 1  # 若對話不完整，往前一步繼續找
 
             summary = await summarize_conversation(user_id, recent_pairs)
-            if summary:
-                sid = get_next_memory_id(user_id)
-                today = datetime.now(tz).strftime("%Y-%m-%d")
-                content = f"【記憶{sid}】{today} {summary}"
-                add_conversation(user_id, "memory", content, importance=4)
-                await ctx.send(f"🧠 已新增記憶：記憶{sid}")
+            new_id = insert_memory_and_return_id(user_id, summary)  # 先插入拿到實際 DB 的 id
+            today = datetime.now(tz).strftime("%Y-%m-%d")
 
+            # 再用 UPDATE 改 content 裡的記憶標籤
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.cursor()
+                summary_text = f"【記憶{new_id}】{today} {summary}"
+                cur.execute("UPDATE memories SET content = ? WHERE id = ?", (summary_text, new_id))
+            # ✅ 傳送新增記憶提示
+            await ctx.send("🧠 已新增記憶！")
 
         except RateLimitError:
             # 摘要也吃到免費額度限制就不做摘要，避免洗版
             pass
         except Exception as e:
-            print("[聊天] summarize error: ", e)
+            print("[聊天] generate_reply error: ", e)
+            try:
+                await ctx.send("⚠️ 無法送出訊息，可能是連不上 Discord，請稍後再試。")
+            except Exception as send_error:
+                print(f"[ctx.send 傳送錯誤]：{send_error}")
+                # 嘗試私訊通知使用者
+                try:
+                    user = await ctx.bot.fetch_user(ctx.author.id)
+                    await user.send("⚠️ 機器人目前無法正常傳送訊息（可能網路不穩或 Discord 伺服器問題），請稍後再試。")
+                except Exception as dm_error:
+                    print(f"[備援私訊失敗]：{dm_error}")
+
     # 7) 傳送回覆
     await ctx.send(answer)
 # ╰───────────────────────────────────────────────────────────────────────╯
