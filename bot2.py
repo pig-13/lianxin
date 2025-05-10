@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import asyncio
 import pytz
 import requests
-
+import re
 import discord
 from discord.ext import commands, tasks
 
@@ -21,7 +21,6 @@ from sentence_transformers import SentenceTransformer
 import tiktoken
 
 import aiohttp, json, textwrap, asyncio
-
 
 # ╭─[ 基本設定 ]──────────────────────────────────────────────────────────╮
 load_dotenv()
@@ -239,7 +238,7 @@ def filter_bad_memories(mem_list: list[tuple[str, float]]) -> list[tuple[str, fl
 async def generate_reply(
     user_id: str,
     messages: list[dict],
-    model: str = "deepseek/deepseek-chat-v3-0324:free",
+    model: str = "google/gemini-2.5-pro-exp-03-25",
     temperature: float = 0.7,
     max_tokens: int = 8000,
 ) -> str:
@@ -259,7 +258,10 @@ async def generate_reply(
 
     # 🔹 Step 3: 插入語意記憶區塊（插在 system prompt 之後）
     if mems:
-        mem_txt = "\n".join(f"- {t}" for t, _ in mems)
+        mem_txt = "\n".join(
+            f"- 日期：{match.group(1)}\n 內容：{t}" if (match := re.search(r"(\d{4}-\d{2}-\d{2})", t)) else f"- 內容：{t}"
+            for t, _ in mems
+        )
         memory_block = {
             "role": "system",
             "content": "以下是過往記憶，可作背景參考，請勿逐句複製：\n" + mem_txt
@@ -293,7 +295,9 @@ async def generate_reply(
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
     # 🔹 Step 5: 發送 API
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45)) as sess:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as sess:
+        timeout_warned = False  # 是否已告知過用戶「塞車中」
+
         for attempt in range(3):
             try:
                 async with sess.post(
@@ -326,21 +330,29 @@ async def generate_reply(
 
                     reply = data["choices"][0]["message"]["content"].strip()
 
-                    # 🔹 Step 6: 過濾空內容與敏感詞
                     if not reply or any(k in reply for k in FORBIDDEN_KEYWORDS):
                         print("❌ 回傳內容為空或含有敏感關鍵字，略過")
-                        return "(模型回應異常，已忽略本輪內容)"
+                        return "⚠️ 模型回應異常，請再傳一次喔～"
 
                     return reply
 
             except RateLimitError:
                 raise
+            except asyncio.TimeoutError:
+                print(f"[generate_reply] 第 {attempt+1}/3 次請求超時")
+                if not timeout_warned:
+                    # ✅ 第一次 timeout 時告知使用者「還在等伺服器回應」
+                    timeout_warned = True
+                    await message.channel.send("⏳ 好像伺服器有點塞車，我還在等他回應喔，請稍等一下～")
+                await asyncio.sleep(5)
             except Exception as e:
                 import traceback
                 print(f"[generate_reply] retry {attempt+1}/3 ➜ {repr(e)}")
                 traceback.print_exc()
                 await asyncio.sleep(5)
 
+        # 三次都失敗才回這句
+        return "⚠️ 等太久了，可能真的塞住了，請再傳一次喔 🕐"
     raise RuntimeError("three tries failed")
 # ╰───────────────────────────────────────────────────────────────────────╯
 #簡易版總結摘要用的reply
@@ -848,35 +860,44 @@ async def 聊天(ctx, *, question: str):
             "請遵守：\n"
             "1. 永遠用「我」對「使用者」說話。\n"
             "2. 加入 *動作*、情緒、場景描寫（戀人視角）。\n"
-            "3. 至少 120 字並自然分段。\n"
+            "3. 至少 300 字並自然分段。\n"
             "4. 避免冷淡或機械感。\n"
             "5. 請根據背景記憶作答，不得捏造未提及的事件或細節。\n"
+            "6. 請完整回覆內容，禁止留白、只使用動作描寫，或無實質內容的回答。\n"
         )
     }
     messages = [system_msg] + recent
     messages = safe_trim(messages, answer_budget=256, max_ctx=8192)
 
-    # 4) 呼叫生成（捕捉免費額度已用完）
+    # 4) 呼叫生成（捕捉免費額度用完，並處理空白回傳 fallback）
     try:
         async with ctx.typing():
             answer = await generate_reply(
                 user_id, messages,
-                model="deepseek/deepseek-chat-v3-0324:free",
-                max_tokens=256
+                model="google/gemini-2.5-pro-exp-03-25",
+                max_tokens=10000
             )
 
-        if not answer or not answer.strip():
-            await ctx.send("⚠️ 模型沒有回應內容，請稍後再試。")
-            return
+        # ❗這裡改成比對你 return 的 fallback 字串
+        if not answer or "模型回應異常" in answer:
+            raise ValueError("⚠️ 主模型回傳空白或無效，觸發備援")
 
     except RateLimitError as e:
-        # 免費額度用完 → 直接告知使用者並結束
         await ctx.send(f"（OpenRouter：{e}；免費額度將在 **{e.reset_local}** 重置）")
         return
+
     except Exception as e:
-        print("[聊天] generate_reply error: ", e)
-        await ctx.send("（伺服器忙碌，請稍後再試…）")
-        return
+        print("🌀 使用 deepseek/deepseek-chat:free 備援中")
+        try:
+            answer = await generate_reply(
+                user_id, messages,
+                model="deepseek/deepseek-chat:free",
+                max_tokens=1024
+            )
+        except Exception as fallback_error:
+            print("[備援也失敗]", fallback_error)
+            await ctx.send("（伺服器忙碌，請稍後再試…）")
+            return
 
     # 5) 寫入對話記憶
     add_conversation(user_id, "user",      question, importance=3)
