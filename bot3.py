@@ -207,9 +207,15 @@ def get_similar_memories(user_id: str, query_text: str,
 # ╰───────────────────────────────────────────────────────────────────────╯
 
 # ╭─[ Token 工具 ]────────────────────────────────────────────────────────╮
-def estimate_tokens(messages):
-    return sum(len(encoding.encode(m["content"])) for m in messages)
+def extract_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(block.get("text", "") for block in content if block.get("type") == "text")
+    return ""
 
+def estimate_tokens(messages):
+    return sum(len(encoding.encode(extract_text(m["content"]))) for m in messages)
 
 def safe_trim(messages, answer_budget=256, max_ctx=8192):
     """超過總 token 時，依序砍最早的非 system 訊息。"""
@@ -241,25 +247,41 @@ async def generate_reply(
     model: str = "google/gemini-2.5-pro-exp-03-25",
     temperature: float = 0.7,
     max_tokens: int = 8000,
+    message=None
 ) -> str:
     increment_api_counter(REQUESTS_PER_CHAT)
 
-    # 🔹 Step 1: 提取 system prompt + 其餘訊息
     sys_msg = messages[0]
     rest_messages = messages[1:]
 
-    # 🔹 Step 2: 用最近幾輪對話組合做語意檢索（比單句更精準）
+    def extract_text_content(content):
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            # 處理 Gemini 或 Vision 模型格式，取出所有文字內容拼接
+            return "\n".join(block["text"] for block in content if block.get("type") == "text").strip()
+        return ""
+
     recent_text = "\n".join(
-        m["content"].strip() for m in reversed(rest_messages[-6:])
+        extract_text_content(m["content"])
+        for m in reversed(rest_messages[-6:])
         if m["role"] in ("user", "assistant")
     )
+
     mems = get_similar_memories(user_id, recent_text, top_k=3, max_distance=1)
     mems = filter_bad_memories(mems)
 
-    # 🔹 Step 3: 插入語意記憶區塊（插在 system prompt 之後）
     if mems:
+        def safe_str(x):
+            try:
+                return str(x)
+            except Exception:
+                return ""
+
         mem_txt = "\n".join(
-            f"- 日期：{match.group(1)}\n 內容：{t}" if (match := re.search(r"(\d{4}-\d{2}-\d{2})", t)) else f"- 內容：{t}"
+            f"- 日期：{match.group(1)}\n 內容：{safe_str(t)}"
+            if (match := re.search(r"(\d{4}-\d{2}-\d{2})", safe_str(t)))
+            else f"- 內容：{safe_str(t)}"
             for t, _ in mems
         )
         memory_block = {
@@ -271,40 +293,31 @@ async def generate_reply(
         for idx, (text, dist) in enumerate(mems, 1):
             print(f"{idx}. 相似度距離={dist:.4f}：{text}")
         print("📚 ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑")
-
     else:
-        messages = [sys_msg] + rest_messages  # 無記憶也要保留原本結構
+        messages = [sys_msg] + rest_messages
 
     print(f"🧮 總 token 數：約 {estimate_tokens(messages)}")
 
-    # 🔹 Step 4: 建立 API 請求
     payload = {
-        "model":       model,
-        "messages":    messages,
+        "model": model,
+        "messages": messages,
         "temperature": temperature,
-        "max_tokens":  max_tokens,
+        "max_tokens": max_tokens,
     }
     headers = {
-        "Content-Type":  "application/json",
+        "Content-Type": "application/json",
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "HTTP-Referer":  "https://muichiro.local",
-        "X-Title":       "Muichiro Bot",
+        "HTTP-Referer": "https://muichiro.local",
+        "X-Title": "Muichiro Bot",
     }
 
-    print("🚨 [DEBUG] 傳給 API 的 payload：")
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
-
-    # 🔹 Step 5: 發送 API
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as sess:
-        timeout_warned = False  # 是否已告知過用戶「塞車中」
-
+    async def call_openrouter_api(payload, headers, sess):
         for attempt in range(3):
             try:
                 async with sess.post(
                     "https://openrouter.ai/api/v1/chat/completions",
                     json=payload, headers=headers
                 ) as r:
-
                     raw = await r.text()
 
                     if r.status == 429:
@@ -323,37 +336,41 @@ async def generate_reply(
                     data = json.loads(raw)
                     if "choices" not in data:
                         print("[OpenRouter] 回傳中無 choices：", raw[:200])
-                        raise RuntimeError("missing choices")
-
-                    print("[OpenRouter 回傳 JSON] =")
-                    print(json.dumps(data, indent=2, ensure_ascii=False))
+                        raise RuntimeError("missing_choices")
 
                     reply = data["choices"][0]["message"]["content"].strip()
-
                     if not reply or any(k in reply for k in FORBIDDEN_KEYWORDS):
-                        print("❌ 回傳內容為空或含有敏感關鍵字，略過")
                         return "⚠️ 模型回應異常，請再傳一次喔～"
 
                     return reply
 
-            except RateLimitError:
-                raise
-            except asyncio.TimeoutError:
-                print(f"[generate_reply] 第 {attempt+1}/3 次請求超時")
-                if not timeout_warned:
-                    # ✅ 第一次 timeout 時告知使用者「還在等伺服器回應」
-                    timeout_warned = True
-                    await message.channel.send("⏳ 好像伺服器有點塞車，我還在等他回應喔，請稍等一下～")
-                await asyncio.sleep(5)
             except Exception as e:
-                import traceback
-                print(f"[generate_reply] retry {attempt+1}/3 ➜ {repr(e)}")
-                traceback.print_exc()
-                await asyncio.sleep(5)
+                print(f"[call_openrouter_api] retry {attempt+1}/3 ➜ {repr(e)}")
+                await asyncio.sleep(3)
 
-        # 三次都失敗才回這句
-        return "⚠️ 等太久了，可能真的塞住了，請再傳一次喔 🕐"
-    raise RuntimeError("three tries failed")
+        raise RuntimeError("three tries failed")
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as sess:
+        timeout_warned = False
+
+        try:
+            return await call_openrouter_api(payload, headers, sess)
+
+        except RateLimitError as e:
+            return f"⚠️ 模型已達今日使用上限，請明天 {e.reset_time} 再試～"
+
+        except RuntimeError as e:
+            if "rate_limit" in str(e).lower() or "missing_choices" in str(e).lower():
+                print("⚠️ Gemini 超量或異常，自動切換至 DeepSeek")
+                payload["model"] = "deepseek/deepseek-chat-v3-0324:free"
+                try:
+                    return await call_openrouter_api(payload, headers, sess)
+                except Exception:
+                    return "⚠️ 兩個模型都爆了...請等一會兒再試一次 🕐"
+
+            print(f"[generate_reply] 最終錯誤 ➜ {str(e)}")
+            return "⚠️ 模型處理異常，請再傳一次喔～"
+
 # ╰───────────────────────────────────────────────────────────────────────╯
 #簡易版總結摘要用的reply
 async def generate_summary_reply(
@@ -560,7 +577,8 @@ async def 指令(ctx):
 💬 聊天
 └ `！聊天 <訊息>`              與角色聊天（保留對話記憶，含動作）  
    例：！聊天 早安呀～
-
+└ `！圖片 <訊息>               與角色聊天並可傳送圖片（保留對話記憶，含動作）
+   
 ⏰ 提醒
 └ `！提醒 HH:MM <訊息>`        指定「今天」時間一次性提醒  
    例：！提醒 12:00 吃飯  
@@ -572,9 +590,7 @@ async def 指令(ctx):
 └ `！刪除提醒 <編號>`          刪除指定提醒（先用上條指令查編號）
 
 🧠 記憶管理
-└ `！查看記憶`                 查看最近的對話記憶  
-└ `！重置記憶`                 清空所有對話記憶  
-└ `！刪除記憶 <編號>`          刪除特定記憶片段
+└ `！記憶管理`                 開啟一個介面查看記憶跟編輯、新增、刪除 
 
 🔧 其他工具
 └ `！查我ID`                   顯示你的 Discord 使用者 ID  
@@ -668,51 +684,14 @@ async def 重設角色(ctx):
 # ────────────────────────────────────────────────────────────────────────
 # 記憶 CRUD
 # ────────────────────────────────────────────────────────────────────────
-@bot.command()
-async def 重置記憶(ctx):
-    clear_conversation(str(ctx.author.id))
-    await ctx.send("已清除你與機器人的所有對話記憶。")
 
-
-@bot.command()
-async def 刪除記憶(ctx, 記憶編號: int):
-    user_id = str(ctx.author.id)
-    prefix = f"【記憶{記憶編號}】"
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT id FROM memories
-            WHERE user_id=? AND role='memory' AND content LIKE ?
-        """, (user_id, f"{prefix}%"))
-        row = cur.fetchone()
-
-        if not row:
-            await ctx.send(f"找不到「記憶{記憶編號}」，請確認編號。")
-            return
-
-        cur.execute("DELETE FROM memories WHERE id=?", (row[0],))
-        conn.commit()
-    await ctx.send(f"🗑️ 已刪除記憶（記憶{記憶編號}）。")
-
-
-@bot.command()
-async def 查看記憶(ctx):
-    user_id = str(ctx.author.id)
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT content FROM memories
-            WHERE user_id=? AND role='memory'
-            ORDER BY id DESC LIMIT 5
-        """, (user_id,))
-        rows = cur.fetchall()
-
-    if not rows:
-        await ctx.send("目前沒有記憶摘要紀錄。")
-        return
-
-    await ctx.send("以下為你最近的記憶摘要：\n" +
-                   "\n\n".join(r[0] for r in rows)[:1900])
+@bot.command(name="記憶管理")
+async def memory_ui_link(ctx):
+    await ctx.send(
+        "🧠 要編輯記憶、搜尋或刪除，請打開記憶管理介面：\n"
+        "👉 [http://localhost:5000]\n\n"
+        "（只能在本地電腦開啟記憶管理，手機不行）"
+    )
 
 # ────────────────────────────────────────────────────────────────────────
 # 提醒系統
@@ -832,7 +811,7 @@ async def 聊天(ctx, *, question: str):
     """主聊天指令：自動套用角色、語意記憶，並處理免費額度用完的情況"""
 
     user_id = str(ctx.author.id)
-
+    
     # 1) 檢查角色是否已設定
     character_data = get_character_by_user_id(user_id)
     if not character_data or not character_data["name"]:
@@ -840,8 +819,7 @@ async def 聊天(ctx, *, question: str):
         return
 
     # 2) 最近對話（含本輪問題）
-    conv   = get_user_conversation(user_id)
-    conv.append({"role": "user", "content": question})
+    conv = get_user_conversation(user_id) + [{"role": "user", "content": question}]
     recent = conv[-RECENT_MESSAGE_COUNT:]
 
     # 3) System Prompt（固定角色指令）
@@ -891,17 +869,13 @@ async def 聊天(ctx, *, question: str):
         try:
             answer = await generate_reply(
                 user_id, messages,
-                model="deepseek/deepseek-chat:free",
+                model="deepseek/deepseek-chat-v3-0324:free",
                 max_tokens=1024
             )
         except Exception as fallback_error:
             print("[備援也失敗]", fallback_error)
             await ctx.send("（伺服器忙碌，請稍後再試…）")
             return
-
-    # 5) 寫入對話記憶
-    add_conversation(user_id, "user",      question, importance=3)
-    add_conversation(user_id, "assistant", answer,   importance=3)
 
     # 6) 嘗試摘要（摘要 hit limit 時直接跳過）
     used_req = get_today_usage()
@@ -970,6 +944,129 @@ async def 聊天(ctx, *, question: str):
     # 7) 傳送回覆
     await ctx.send(answer)
 # ╰───────────────────────────────────────────────────────────────────────╯
+
+# 新增：!圖片 指令，整合語意記憶、向量搜尋、記憶寫入與摘要累積
+from PIL import Image
+import requests
+from io import BytesIO
+from transformers import BlipProcessor, BlipForConditionalGeneration
+
+# ✅ 初始化 BLIP 模型（可放在主程式最上方）
+processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+
+def describe_image(url):
+    """用 BLIP 模型將圖片轉成描述文字"""
+    try:
+        image = Image.open(BytesIO(requests.get(url).content)).convert("RGB")
+        inputs = processor(image, return_tensors="pt")
+        output = blip_model.generate(**inputs)
+        caption = processor.decode(output[0], skip_special_tokens=True)
+        return caption
+    except Exception as e:
+        print("⚠️ 圖像描述失敗：", e)
+        return "[無法理解圖片]"
+
+@bot.command()
+async def 圖片(ctx, *, question: str = ""):
+    """圖片聊天：用 BLIP 理解圖片內容後觸發語意記憶與回應"""
+    user_id = str(ctx.author.id)
+    image_urls = [a.url for a in ctx.message.attachments if a.content_type and a.content_type.startswith("image/")]
+
+    if not image_urls:
+        await ctx.send("❗請附上圖片後再使用此指令，例如：`!圖片 你覺得這張怎麼樣？`")
+        return
+
+    # ✅ 產生每張圖的描述
+    image_descriptions = []
+    for url in image_urls:
+        caption = describe_image(url)
+        image_descriptions.append(f"圖片描述：{caption}")
+
+    # ✅ 合併為對話內容
+    full_question = question.strip()
+    if image_descriptions:
+        full_question += "\n" + "\n".join(image_descriptions)
+
+    # ✅ 查詢語意記憶
+    mems = get_similar_memories(user_id, full_question, top_k=3, max_distance=1)
+    mems = filter_bad_memories(mems)
+
+    # ✅ 取得角色設定
+    character_data = get_character_by_user_id(user_id)
+    if not character_data or not character_data["name"]:
+        await ctx.send("你的角色尚未設定，請先到前端設定角色。")
+        return
+
+    # ✅ system prompt + 記憶區塊
+    system_msg = {
+        "role": "system",
+        "content": (
+            f"你是 {character_data['name']}，與使用者對話\n"
+            f"你與她的關係：{character_data['relationship']}\n"
+            f"你的說話風格：{character_data['speaking_style']}\n"
+            f"你的背景故事：{character_data['background']}\n"
+            f"你的個性：{character_data['personality']}\n"
+            f"你喜歡：{character_data['likes']}\n"
+            f"你不喜歡：{character_data['dislikes']}\n"
+            f"補充：{character_data['extra']}\n\n"
+            "請遵守：\n"
+            "1. 永遠用「我」對「使用者」說話。\n"
+            "2. 加入 *動作*、情緒、場景描寫（戀人視角）。\n"
+            "3. 至少 300 字並自然分段。\n"
+            "4. 避免冷淡或機械感。\n"
+            "5. 根據背景記憶作答，不得捏造未提及的事件。\n"
+            "6. 回覆需完整，不得留白或無實質內容。"
+        )
+    }
+
+    messages = [system_msg]
+
+    mem_lines = []
+    for t, _ in mems:
+        try:
+            safe_t = t.encode("utf-8", "ignore").decode("utf-8", "ignore")
+            match = re.search(r"(\d{4}-\d{2}-\d{2})", safe_t)
+            if match:
+                mem_lines.append(f"- 日期：{match.group(1)}\n 內容：{safe_t}")
+            else:
+                mem_lines.append(f"- 內容：{safe_t}")
+        except Exception as e:
+            mem_lines.append(f"- ⚠️ 記憶解析錯誤：{repr(t)}｜錯誤：{e}")
+
+    if mem_lines:
+        messages.append({"role": "system", "content": "以下是過往記憶，可作背景參考，請勿逐句複製：\n" + "\n".join(mem_lines)})
+
+    # ✅ 加入使用者提問（含圖片描述）
+    messages.append({"role": "user", "content": full_question})
+
+    try:
+        async with ctx.typing():
+            reply = await generate_reply(
+                user_id=user_id,
+                messages=messages,
+                model="google/gemini-2.5-pro-exp-03-25",
+                max_tokens=2000
+            )
+    except Exception as e:
+        print("[圖片聊天] 回應失敗：", e)
+        await ctx.send("⚠️ 模型忙碌或圖片有誤，請稍後再試一次。")
+        return
+
+    await ctx.send(reply)
+
+    # ✅ 累積摘要
+    used_req = get_today_usage()
+    used_chat = used_req // REQUESTS_PER_CHAT
+    if used_chat > 0 and used_chat % 5 == 0:
+        convo = get_user_conversation(user_id)
+        recent_pairs = convo[-10:]
+        summary = await summarize_conversation(user_id, recent_pairs)
+        new_id = insert_memory_and_return_id(user_id, summary)
+        today = datetime.now(tz).strftime("%Y-%m-%d")
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("UPDATE memories SET content = ? WHERE id = ?", (f"【記憶{new_id}】{today} {summary}", new_id))
+        await ctx.send("🧠 已新增記憶！")
 
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)

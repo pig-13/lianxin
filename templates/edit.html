@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>編輯記憶</title>
+</head>
+<body>
+    <h1>編輯記憶 #{{ memory.id }}</h1>
+    <form method="POST">
+        <textarea name="content" rows="10" cols="50">{{ memory.content }}</textarea><br>
+        <button type="submit">儲存</button>
+    </form>
+    <a href="{{ url_for('index') }}">回首頁</a>
+</body>
+</html>
