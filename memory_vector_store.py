@@ -10,7 +10,7 @@ ensure_schema()
 model = SentenceTransformer('all-MiniLM-L6-v2')
 index = faiss.IndexFlatL2(384)
 
-DB_PATH = "muichiro_bot.db"
+DB_PATH = "lianxin_ai.db"
 
 def add_memory(user_id, role, content, importance=0):
     # 1. 轉向量

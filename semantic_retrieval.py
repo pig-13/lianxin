@@ -4,7 +4,7 @@ import faiss
 from sentence_transformers import SentenceTransformer
 
 # ====== 基本設定 ======
-DB_PATH = "muichiro_bot.db"
+DB_PATH = "lianxin_ai.db"
 model = SentenceTransformer('all-MiniLM-L6-v2')
 index = faiss.IndexFlatL2(384)
 id_mapping = []

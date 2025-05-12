@@ -1,6 +1,6 @@
 import sqlite3
 
-DB_PATH = "muichiro_bot.db"
+DB_PATH = "lianxin_ai.db"
 
 WRONG_ID = "123456789012345678"
 CORRECT_ID = "545532372758560769"

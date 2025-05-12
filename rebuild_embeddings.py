@@ -2,7 +2,7 @@ import sqlite3
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-DB_PATH = "muichiro_bot.db"
+DB_PATH = "lianxin_ai.db"
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
 conn = sqlite3.connect(DB_PATH)

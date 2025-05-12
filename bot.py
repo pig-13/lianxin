@@ -1,5 +1,5 @@
 # ────────────────────────────────────────────────────────────────────────
-#  Muichiro Discord Bot  ‑  all‑in‑one  (2025‑05‑05)
+#  lianxin_ai discord bot  ‑  all‑in‑one  (2025‑05‑05)
 # ────────────────────────────────────────────────────────────────────────
 import os
 import sqlite3
@@ -27,7 +27,7 @@ load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 DISCORD_TOKEN      = os.getenv("DISCORD_TOKEN")
 
-DB_PATH            = "muichiro_bot.db"
+DB_PATH            = "lianxin_ai.db"
 
 EMBED_MODEL_NAME   = "all-MiniLM-L6-v2"
 EMBED_DIM          = 384
@@ -49,18 +49,29 @@ bot = commands.Bot(command_prefix=["!", "！"], intents=intents)
 # ╰───────────────────────────────────────────────────────────────────────╯
 
 # ╭─[ DB：共用工具 ]──────────────────────────────────────────────────────╮
-def get_user_conversation(user_id: str):
+def save_conversation(user_id: str, user_msg: str, ai_msg: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            INSERT INTO conversations (user_id, user_msg, ai_msg)
+            VALUES (?, ?, ?)
+        """, (user_id, user_msg, ai_msg))
+        conn.commit()
+
+def get_user_conversation(user_id: str) -> list[dict]:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute("""
-            SELECT role, content
-            FROM memories
+            SELECT user_msg, ai_msg FROM conversations
             WHERE user_id = ?
             ORDER BY id ASC
         """, (user_id,))
         rows = cur.fetchall()
-    return [{"role": r, "content": c} for r, c in rows]
 
+    convo = []
+    for user_msg, ai_msg in rows:
+        convo.append({"role": "user", "content": user_msg})
+        convo.append({"role": "assistant", "content": ai_msg})
+    return convo
 
 def add_conversation(user_id: str, role: str, content: str, importance: int = 3):
     ts  = datetime.now(tz).strftime("%F %T")
@@ -217,11 +228,16 @@ def extract_text(content):
 def estimate_tokens(messages):
     return sum(len(encoding.encode(extract_text(m["content"]))) for m in messages)
 
-def safe_trim(messages, answer_budget=256, max_ctx=8192):
-    """超過總 token 時，依序砍最早的非 system 訊息。"""
-    while len(messages) > 1 and estimate_tokens(messages) + answer_budget > max_ctx:
-        del messages[1]
+def safe_trim(messages, answer_budget=2048, max_ctx=8192):
+    """自動修剪 messages 確保總 token 不會爆掉（保留 system 與最近訊息）"""
+    while len(messages) > 2 and estimate_tokens(messages) + answer_budget > max_ctx:
+        # 找到最早一筆非 system 的訊息砍掉
+        for i, m in enumerate(messages):
+            if m["role"] != "system":
+                del messages[i]
+                break
     return messages
+
 # ╰───────────────────────────────────────────────────────────────────────╯
 
 # ╭─[ 生成回覆（含語意檢索） ]─────────────────────────────────────────────╮
@@ -258,7 +274,6 @@ async def generate_reply(
         if isinstance(content, str):
             return content.strip()
         if isinstance(content, list):
-            # 處理 Gemini 或 Vision 模型格式，取出所有文字內容拼接
             return "\n".join(block["text"] for block in content if block.get("type") == "text").strip()
         return ""
 
@@ -307,8 +322,8 @@ async def generate_reply(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "HTTP-Referer": "https://muichiro.local",
-        "X-Title": "Muichiro Bot",
+        "HTTP-Referer": "https://lianxin_ai.local",
+        "X-Title": "戀芯",
     }
 
     async def call_openrouter_api(payload, headers, sess):
@@ -339,8 +354,9 @@ async def generate_reply(
                         raise RuntimeError("missing_choices")
 
                     reply = data["choices"][0]["message"]["content"].strip()
+
                     if not reply or any(k in reply for k in FORBIDDEN_KEYWORDS):
-                        return "⚠️ 模型回應異常，請再傳一次喔～"
+                        raise RuntimeError("invalid_or_blocked_reply")  # ✅ 改為 raise
 
                     return reply
 
@@ -351,16 +367,14 @@ async def generate_reply(
         raise RuntimeError("three tries failed")
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as sess:
-        timeout_warned = False
-
         try:
             return await call_openrouter_api(payload, headers, sess)
 
         except RateLimitError as e:
-            return f"⚠️ 模型已達今日使用上限，請明天 {e.reset_time} 再試～"
+            return f"⚠️ 模型已達今日使用上限，請明天 {e.reset_local} 再試～"
 
         except RuntimeError as e:
-            if "rate_limit" in str(e).lower() or "missing_choices" in str(e).lower():
+            if "rate_limit" in str(e).lower() or "missing_choices" in str(e).lower() or "invalid_or_blocked_reply" in str(e).lower():
                 print("⚠️ Gemini 超量或異常，自動切換至 DeepSeek")
                 payload["model"] = "deepseek/deepseek-chat-v3-0324:free"
                 try:
@@ -390,8 +404,8 @@ async def generate_summary_reply(
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "HTTP-Referer": "https://muichiro.local",
-        "X-Title": "Muichiro Summary Bot",
+        "HTTP-Referer": "https://lianxin_ai.local",
+        "X-Title": "lianxin_ai Summary Bot",
     }
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45)) as sess:
@@ -819,8 +833,8 @@ async def 聊天(ctx, *, question: str):
         return
 
     # 2) 最近對話（含本輪問題）
-    conv = get_user_conversation(user_id) + [{"role": "user", "content": question}]
-    recent = conv[-RECENT_MESSAGE_COUNT:]
+    conv = get_user_conversation(user_id)
+    recent = conv[-RECENT_MESSAGE_COUNT:] + [{"role": "user", "content": question}]
 
     # 3) System Prompt（固定角色指令）
     system_msg = {
@@ -838,14 +852,14 @@ async def 聊天(ctx, *, question: str):
             "請遵守：\n"
             "1. 永遠用「我」對「使用者」說話。\n"
             "2. 加入 *動作*、情緒、場景描寫（戀人視角）。\n"
-            "3. 至少 300 字並自然分段。\n"
+            "3. 回覆長度可自由，但需具體、有溫度，不要空洞。請自然分段，字數不強制限制。\n"
             "4. 避免冷淡或機械感。\n"
             "5. 請根據背景記憶作答，不得捏造未提及的事件或細節。\n"
             "6. 請完整回覆內容，禁止留白、只使用動作描寫，或無實質內容的回答。\n"
         )
     }
     messages = [system_msg] + recent
-    messages = safe_trim(messages, answer_budget=256, max_ctx=8192)
+    messages = safe_trim(messages, answer_budget=2048, max_ctx=8192)
 
     # 4) 呼叫生成（捕捉免費額度用完，並處理空白回傳 fallback）
     try:
@@ -853,9 +867,8 @@ async def 聊天(ctx, *, question: str):
             answer = await generate_reply(
                 user_id, messages,
                 model="google/gemini-2.5-pro-exp-03-25",
-                max_tokens=10000
+                max_tokens=2048
             )
-
         # ❗這裡改成比對你 return 的 fallback 字串
         if not answer or "模型回應異常" in answer:
             raise ValueError("⚠️ 主模型回傳空白或無效，觸發備援")
@@ -883,48 +896,39 @@ async def 聊天(ctx, *, question: str):
 
     if used_chat > 0 and used_chat % 5 == 0:
         try:
-            # ✅ 過濾對話，避免灌入錯誤資料或 memory 類型
-            conv = [
-            m for m in conv
-            if m["role"] in ("user", "assistant")
-            and isinstance(m.get("content"), str)
-            and m["content"].strip()
-            ]
-            # 擷取最近 5 輪有效對話（user + assistant）
+            conv = get_user_conversation(user_id)[-10:]  # ✅ 直接抓最後 10 筆（5 user + 5 ai）
+
             recent_pairs = []
             i = len(conv) - 1
-
             while i > 0 and len(recent_pairs) < 10:
-                user_msg = conv[i - 1] if i - 1 >= 0 else None
+                user_msg = conv[i - 1]
                 assistant_msg = conv[i]
 
                 if (
-                    user_msg
-                    and user_msg["role"] == "user"
-                    and isinstance(user_msg.get("content"), str)
-                    and user_msg["content"].strip()
-                    and assistant_msg["role"] == "assistant"
-                    and isinstance(assistant_msg.get("content"), str)
-                    and assistant_msg["content"].strip()
+                    user_msg["role"] == "user" and user_msg["content"].strip()
+                    and assistant_msg["role"] == "assistant" and assistant_msg["content"].strip()
                 ):
                     recent_pairs.insert(0, assistant_msg)
                     recent_pairs.insert(0, user_msg)
                     i -= 2
                 else:
-                    i -= 1  # 若對話不完整，往前一步繼續找
+                    i -= 1
+
+            if not recent_pairs:
+                print("⚠️ 找不到 recent_pairs，略過摘要")
+                return
 
             summary = await summarize_conversation(user_id, recent_pairs)
-            new_id = insert_memory_and_return_id(user_id, summary)  # 先插入拿到實際 DB 的 id
+            if not summary:
+                return
+
+            new_id = insert_memory_and_return_id(user_id, summary)
             today = datetime.now(tz).strftime("%Y-%m-%d")
-
-            # 再用 UPDATE 改 content 裡的記憶標籤
             with sqlite3.connect(DB_PATH) as conn:
-                cur = conn.cursor()
-                summary_text = f"【記憶{new_id}】{today} {summary}"
-                cur.execute("UPDATE memories SET content = ? WHERE id = ?", (summary_text, new_id))
-            # ✅ 傳送新增記憶提示
+                conn.execute("UPDATE memories SET content = ? WHERE id = ?",
+                            (f"【記憶{new_id}】{today} {summary}", new_id))
             await ctx.send("🧠 已新增記憶！")
-
+        
         except RateLimitError:
             # 摘要也吃到免費額度限制就不做摘要，避免洗版
             pass
@@ -940,6 +944,10 @@ async def 聊天(ctx, *, question: str):
                     await user.send("⚠️ 機器人目前無法正常傳送訊息（可能網路不穩或 Discord 伺服器問題），請稍後再試。")
                 except Exception as dm_error:
                     print(f"[備援私訊失敗]：{dm_error}")
+        except Exception as e:
+            print("⚠️ 摘要錯誤：", e)
+
+    save_conversation(user_id, question, answer)
 
     # 7) 傳送回覆
     await ctx.send(answer)
@@ -956,16 +964,25 @@ processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base
 blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
 
 def describe_image(url):
-    """用 BLIP 模型將圖片轉成描述文字"""
+    """用 BLIP 模型將圖片轉成描述文字，並清理為安全字串"""
     try:
         image = Image.open(BytesIO(requests.get(url).content)).convert("RGB")
         inputs = processor(image, return_tensors="pt")
         output = blip_model.generate(**inputs)
         caption = processor.decode(output[0], skip_special_tokens=True)
-        return caption
+
+        # ✅ utf-8 清洗 + 移除控制符號 + 去除空白
+        clean_caption = caption.encode("utf-8", "ignore").decode("utf-8", "ignore").strip()
+
+        # ✅ 防止空白進資料庫
+        if not clean_caption:
+            return "[圖片描述為空]"
+        return clean_caption
+
     except Exception as e:
         print("⚠️ 圖像描述失敗：", e)
         return "[無法理解圖片]"
+
 
 @bot.command()
 async def 圖片(ctx, *, question: str = ""):
@@ -1013,7 +1030,7 @@ async def 圖片(ctx, *, question: str = ""):
             "請遵守：\n"
             "1. 永遠用「我」對「使用者」說話。\n"
             "2. 加入 *動作*、情緒、場景描寫（戀人視角）。\n"
-            "3. 至少 300 字並自然分段。\n"
+            "3. 回覆長度可自由，但需具體、有溫度，不要空洞。請自然分段，字數不強制限制。\n"
             "4. 避免冷淡或機械感。\n"
             "5. 根據背景記憶作答，不得捏造未提及的事件。\n"
             "6. 回覆需完整，不得留白或無實質內容。"
@@ -1048,10 +1065,13 @@ async def 圖片(ctx, *, question: str = ""):
                 model="google/gemini-2.5-pro-exp-03-25",
                 max_tokens=2000
             )
+
     except Exception as e:
         print("[圖片聊天] 回應失敗：", e)
         await ctx.send("⚠️ 模型忙碌或圖片有誤，請稍後再試一次。")
         return
+
+    save_conversation(user_id, full_question, reply)
 
     await ctx.send(reply)
 
@@ -1062,6 +1082,8 @@ async def 圖片(ctx, *, question: str = ""):
         convo = get_user_conversation(user_id)
         recent_pairs = convo[-10:]
         summary = await summarize_conversation(user_id, recent_pairs)
+        if not summary:
+            return
         new_id = insert_memory_and_return_id(user_id, summary)
         today = datetime.now(tz).strftime("%Y-%m-%d")
         with sqlite3.connect(DB_PATH) as conn:

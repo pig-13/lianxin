@@ -1,6 +1,6 @@
 import sqlite3
 
-DB_PATH = "muichiro_bot.db"
+DB_PATH = "lianxin_ai.db"
 
 # 建立主資料庫連線
 conn = sqlite3.connect(DB_PATH)
@@ -23,6 +23,18 @@ CREATE TABLE IF NOT EXISTS characters (
 );
 """)
 
+# 建立 user_profiles 表（使用者資料）
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS user_profiles (
+    user_id TEXT PRIMARY KEY,
+    nickname TEXT,
+    age TEXT,
+    gender TEXT,
+    background TEXT,
+    extra TEXT
+);
+""")
+
 # 建立 memories 表（記憶系統，含 embedding 向量欄位）
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS memories (
@@ -33,6 +45,17 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at TEXT,
     importance INTEGER,
     embedding BLOB
+);
+""")
+
+# 建立 conversations 表（新增：用來儲存對話記錄）
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT,
+    user_msg TEXT,
+    ai_msg TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 """)
 
@@ -81,7 +104,7 @@ def init_memory_db():
 # 初始化完成
 
 def ensure_schema():
-    conn = sqlite3.connect("muichiro_bot.db")
+    conn = sqlite3.connect("lianxin_ai.db")
     cursor = conn.cursor()
     try:
         cursor.execute("ALTER TABLE memories ADD COLUMN embedding BLOB;")

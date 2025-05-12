@@ -1,6 +1,6 @@
 import sqlite3, re, datetime as dt
 
-DB = "muichiro_bot.db"
+DB = "lianxin_ai.db"
 # 支援 2025-2-15、2025/02/15、2025年2月15日
 DATE_RE = re.compile(r"(\d{4})[-/年]\s*(\d{1,2})[-/月]\s*(\d{1,2})")
 

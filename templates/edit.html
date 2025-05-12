@@ -1,15 +1,98 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-Hant">
 <head>
-    <meta charset="UTF-8">
-    <title>編輯記憶</title>
+  <meta charset="UTF-8" />
+  <title>戀芯 - 編輯記憶</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC&display=swap" rel="stylesheet" />
+  <style>
+    body {
+      font-family: 'Noto Sans TC', sans-serif;
+      background: linear-gradient(to bottom right, #fff0f5, #f0f8ff);
+      margin: 0;
+      padding: 0;
+      color: #333;
+    }
+
+    header {
+      background-color: #ffb6c1;
+      padding: 1rem;
+      text-align: center;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+
+    header h1 {
+      color: white;
+      margin: 0;
+      font-size: 2rem;
+      letter-spacing: 3px;
+    }
+
+    main {
+      max-width: 800px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+    }
+
+    form {
+      background: white;
+      padding: 2rem;
+      border-radius: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    }
+
+    textarea {
+      width: 100%;
+      padding: 1rem;
+      font-size: 1rem;
+      border-radius: 8px;
+      border: 1px solid #ccc;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      resize: vertical;
+      height: 250px;
+      box-sizing: border-box;
+    }
+
+    button {
+      margin-top: 1rem;
+      padding: 0.6rem 1.2rem;
+      background-color: #ff69b4;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background-color: #ff1493;
+    }
+
+    .back-link {
+      display: block;
+      margin-top: 1.5rem;
+      text-align: center;
+      color: #6495ed;
+      text-decoration: none;
+      font-weight: bold;
+    }
+
+    .back-link:hover {
+      text-decoration: underline;
+    }
+  </style>
 </head>
 <body>
-    <h1>編輯記憶 #{{ memory.id }}</h1>
+  <header>
+    <h1>戀芯・記憶管理系統</h1>
+  </header>
+
+  <main>
     <form method="POST">
-        <textarea name="content" rows="10" cols="50">{{ memory.content }}</textarea><br>
-        <button type="submit">儲存</button>
+      <h2>✏️ 編輯記憶 #{{ memory.id }}</h2>
+      <textarea name="content">{{ memory.content }}</textarea><br>
+      <button type="submit">💾 儲存</button>
     </form>
-    <a href="{{ url_for('index') }}">回首頁</a>
+    <a class="back-link" href="{{ url_for('index') }}">← 回首頁</a>
+  </main>
 </body>
 </html>

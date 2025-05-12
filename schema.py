@@ -1,6 +1,6 @@
 import sqlite3
 
-DB_PATH = "muichiro_bot.db"  # 你的資料庫名稱
+DB_PATH = "lianxin_ai.db"  # 你的資料庫名稱
 
 conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()

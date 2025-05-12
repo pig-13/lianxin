@@ -3,7 +3,7 @@ import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 
-DB_PATH = "muichiro_bot.db"
+DB_PATH = "lianxin_ai.db"
 
 # 初始化模型與向量 index
 model = SentenceTransformer('all-MiniLM-L6-v2')

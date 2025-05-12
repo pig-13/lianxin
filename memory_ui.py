@@ -3,7 +3,7 @@ from flask import Flask, render_template, request, redirect, url_for
 import sqlite3
 
 app = Flask(__name__)
-DB_PATH = 'muichiro_bot.db'  # 修改為你實際的資料庫路徑
+DB_PATH = 'lianxin_ai.db'  # 修改為你實際的資料庫路徑
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)

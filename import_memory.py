@@ -2,7 +2,7 @@
 import re, sqlite3, datetime as dt, pathlib
 
 # === 個人設定 ===
-DB_PATH   = "muichiro_bot.db"
+DB_PATH   = "lianxin_ai.db"
 TXT_PATH  = "memory.txt"
 USER_ID   = "545532372758560769"   # ← 換成你的 Discord ID
 # =================

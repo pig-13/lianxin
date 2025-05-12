@@ -1,10 +1,10 @@
 
 import sqlite3
 
-DB_PATH = "muichiro_bot.db"
+DB_PATH = "lianxin_ai.db"
 
 def get_character_by_user_id(user_id):
-    conn = sqlite3.connect("muichiro_bot.db")
+    conn = sqlite3.connect("lianxin_ai.db")
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM characters WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
@@ -27,7 +27,7 @@ def get_character_by_user_id(user_id):
 import sqlite3
 
 def get_latest_memory_id():
-    conn = sqlite3.connect("muichiro_bot.db")
+    conn = sqlite3.connect("lianxin_ai.db")
     cur = conn.cursor()
     cur.execute("SELECT MAX(id) FROM memories WHERE role='memory'")
     result = cur.fetchone()
