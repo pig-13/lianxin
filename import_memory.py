@@ -4,7 +4,7 @@ import re, sqlite3, datetime as dt, pathlib
 # === 個人設定 ===
 DB_PATH   = "lianxin_ai.db"
 TXT_PATH  = "memory.txt"
-USER_ID   = "545532372758560769"   # ← 換成你的 Discord ID
+USER_ID   = "user_id"   # ← 換成你的 Discord ID
 # =================
 
 # ① 以 “【記憶xxx】” 切塊：一塊 = 一條長期記憶

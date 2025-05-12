@@ -137,6 +137,27 @@ def insert_memory_and_return_id(user_id: str, content: str, importance: int = 4)
         conn.commit()
         return cur.lastrowid  # ✅ 回傳實際的 ID
 
+def get_user_profile(user_id: str) -> dict:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT nickname, age, gender, background, extra
+            FROM user_profiles
+            WHERE user_id = ?
+        """, (user_id,))
+        row = cur.fetchone()
+
+    if not row:
+        return {}
+
+    return {
+        "nickname": row[0] or "",
+        "age": row[1] or "",
+        "gender": row[2] or "",
+        "background": row[3] or "",
+        "extra": row[4] or ""
+    }
+
 # ╰───────────────────────────────────────────────────────────────────────╯
 
 # ╭─[ API‑log：每日計數 ]───────────────────────────────────────────────────╮
@@ -370,21 +391,19 @@ async def generate_reply(
         try:
             return await call_openrouter_api(payload, headers, sess)
 
-        except RateLimitError as e:
-            return f"⚠️ 模型已達今日使用上限，請明天 {e.reset_local} 再試～"
-
-        except RuntimeError as e:
-            if "rate_limit" in str(e).lower() or "missing_choices" in str(e).lower() or "invalid_or_blocked_reply" in str(e).lower():
+        except (RateLimitError, RuntimeError) as e:  # ✅ 捕捉 RateLimitError
+            print(f"[備援啟動條件] 捕獲：{e}")
+            if any(k in str(e).lower() for k in ["rate_limit", "missing_choices", "invalid_or_blocked_reply","three tries failed"]):
                 print("⚠️ Gemini 超量或異常，自動切換至 DeepSeek")
                 payload["model"] = "deepseek/deepseek-chat-v3-0324:free"
                 try:
                     return await call_openrouter_api(payload, headers, sess)
-                except Exception:
+                except Exception as backup_error:
+                    print("❌ 備援也失敗：", backup_error)
                     return "⚠️ 兩個模型都爆了...請等一會兒再試一次 🕐"
 
             print(f"[generate_reply] 最終錯誤 ➜ {str(e)}")
             return "⚠️ 模型處理異常，請再傳一次喔～"
-
 # ╰───────────────────────────────────────────────────────────────────────╯
 #簡易版總結摘要用的reply
 async def generate_summary_reply(
@@ -457,9 +476,9 @@ async def summarize_conversation(user_id: str, recent_pairs: list[dict]) -> str:
                     "- 僅根據對話內容，嚴禁虛構任何未提及的資訊\n"
                     "- 完全禁止使用角色語氣、小說句式、*動作* 等描述\n\n"
                     "【正確範例】\n"
-                    "1. 小豬豬因為看短影片，覺得自己專注力變差\n"
-                    "2. 小豬豬想明天早上吃金黃酥脆的薯餅\n"
-                    "3. 無一郎向小豬豬道歉，表示自己記錯事情\n\n"
+                    "1. {user_name}因為看短影片，覺得自己專注力變差\n"
+                    "2. {user_name}想明天早上吃金黃酥脆的薯餅\n"
+                    "3. {ai_name}向{user_name}道歉，表示自己記錯事情\n\n"
                     "請條列出 3–5 項真實資訊："
                 )
             },
@@ -579,14 +598,19 @@ from db_utils import get_character_by_user_id   # 你原來的 util 保留
 
 @bot.command()
 async def 指令(ctx):
+    user_id = str(ctx.author.id)
     await ctx.send(
         """**📜 可用指令總覽**
 
-🧑‍🎤 角色相關
+🧑‍🎤 角色相關 (可至記憶管理系統的頁面設定也可用DC指令設定)
 └ `！查看角色`                 查看自己的角色資料  
 └ `！重設角色`                 重置自己的角色資料  
 └ `！設定角色 <欄位> <內容>`   設定或更新角色欄位  
-   例：！設定角色 性格 溫柔體貼
+   例：！設定角色 說話風格 溫柔體貼 (建議說話風格敘述完之後給AI一個範例讓AI更好知道你要的是甚麼)
+
+😊 使用者 (非強制設定，可至記憶管理系統的頁面設定也可用DC指令設定)
+└ `！設定使用者 <欄位> <內容>   設定自己玩家的資料
+    例：！設定使用者 暱稱 小貓咪
 
 💬 聊天
 └ `！聊天 <訊息>`              與角色聊天（保留對話記憶，含動作）  
@@ -604,7 +628,7 @@ async def 指令(ctx):
 └ `！刪除提醒 <編號>`          刪除指定提醒（先用上條指令查編號）
 
 🧠 記憶管理
-└ `！記憶管理`                 開啟一個介面查看記憶跟編輯、新增、刪除 
+└ `！記憶管理`                 開啟一個介面查看記憶跟編輯、新增、刪除，還有角色跟使用者資料
 
 🔧 其他工具
 └ `！查我ID`                   顯示你的 Discord 使用者 ID  
@@ -615,6 +639,7 @@ async def 指令(ctx):
 # ────────────────────────────────────────────────────────────────────────
 @bot.command()
 async def 設定角色(ctx, 欄位: str, *, 內容: str):
+    user_id = str(ctx.author.id)
     """以中文欄位設定角色資訊，例如： ！設定角色 個性 溫柔又呆萌"""
     中文對應 = {
         "名字": "name",
@@ -695,12 +720,74 @@ async def 重設角色(ctx):
         conn.commit()
     await ctx.send("已重置你的角色資料，請重新設定。")
 
+@bot.command()
+async def 設定使用者(ctx, 欄位: str, *, 內容: str):
+    user_id = str(ctx.author.id)
+    中文對應 = {
+        "暱稱": "nickname",
+        "年齡": "age",
+        "性別": "gender",
+        "背景": "background",
+        "補充": "extra"
+    }
+    if 欄位 not in 中文對應:
+        await ctx.send("欄位錯誤，可設定：暱稱、年齡、性別、背景、補充")
+        return
+
+    key = 中文對應[欄位]
+    user_id = str(ctx.author.id)
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM user_profiles WHERE user_id=?", (user_id,))
+        exists = cur.fetchone()
+
+        if exists:
+            cur.execute(f"UPDATE user_profiles SET {key}=? WHERE user_id=?", (內容, user_id))
+        else:
+            blanks = {v: "" for v in 中文對應.values()}
+            blanks[key] = 內容
+            cur.execute("""
+                INSERT INTO user_profiles (user_id, nickname, age, gender, background, extra)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (user_id, blanks["nickname"], blanks["age"], blanks["gender"], blanks["background"], blanks["extra"]))
+        conn.commit()
+
+    await ctx.send(f"✅ 已設定你的「{欄位}」為：{內容}")
+
+@bot.command(name="查看使用者")
+async def view_user_profile(ctx):
+    user_id = str(ctx.author.id)
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM user_profiles WHERE user_id=?", (user_id,))
+        row = cur.fetchone()
+
+    if not row:
+        await ctx.send("你還沒有設定任何使用者資料喔～請用 `！設定使用者 暱稱 xxx` 開始設定！")
+        return
+
+    profile = (
+        f"🧑‍💼 **你的使用者資料如下：**\n"
+        f"• 暱稱：{row['nickname'] or '未設定'}\n"
+        f"• 年齡：{row['age'] or '未設定'}\n"
+        f"• 性別：{row['gender'] or '未設定'}\n"
+        f"• 背景：{row['background'] or '未設定'}\n"
+        f"• 補充：{row['extra'] or '無'}"
+    )
+
+    await ctx.send(profile)
+
+
 # ────────────────────────────────────────────────────────────────────────
 # 記憶 CRUD
 # ────────────────────────────────────────────────────────────────────────
 
 @bot.command(name="記憶管理")
 async def memory_ui_link(ctx):
+    user_id = str(ctx.author.id)
     await ctx.send(
         "🧠 要編輯記憶、搜尋或刪除，請打開記憶管理介面：\n"
         "👉 [http://localhost:5000]\n\n"
@@ -712,6 +799,7 @@ async def memory_ui_link(ctx):
 # ────────────────────────────────────────────────────────────────────────
 @bot.command()
 async def 提醒(ctx, *args):
+    user_id = str(ctx.author.id)
     """格式：
        ！提醒 HH:MM 訊息
        ！提醒 MM/DD HH:MM 訊息
@@ -803,10 +891,12 @@ async def 刪除提醒(ctx, reminder_id: int):
 # ────────────────────────────────────────────────────────────────────────
 @bot.command()
 async def 查我ID(ctx):
+    user_id = str(ctx.author.id)
     await ctx.send(f"你的 Discord user ID 是：`{ctx.author.id}`")
 
 @bot.command(name="查看聊天次數", aliases=["！查看聊天次數"])
 async def check_usage(ctx):
+    user_id = str(ctx.author.id)
     used_req     = get_today_usage()
     used_chat    = used_req // REQUESTS_PER_CHAT
     total_chat   = 454  # ✅ 你明確設定為 454 次聊天
@@ -822,6 +912,7 @@ async def check_usage(ctx):
 # — 聊天主指令 ------------------------------------------------------------
 @bot.command()
 async def 聊天(ctx, *, question: str):
+    user_id = str(ctx.author.id)
     """主聊天指令：自動套用角色、語意記憶，並處理免費額度用完的情況"""
 
     user_id = str(ctx.author.id)
@@ -836,6 +927,14 @@ async def 聊天(ctx, *, question: str):
     conv = get_user_conversation(user_id)
     recent = conv[-RECENT_MESSAGE_COUNT:] + [{"role": "user", "content": question}]
 
+    #使用者資料
+    user_profile = get_user_profile(user_id)
+    nickname = user_profile.get("nickname", "")
+    age = user_profile.get("age", "")
+    gender = user_profile.get("gender", "")
+    user_background = user_profile.get("background", "")
+    user_extra = user_profile.get("extra", "")
+
     # 3) System Prompt（固定角色指令）
     system_msg = {
         "role": "system",
@@ -848,7 +947,12 @@ async def 聊天(ctx, *, question: str):
             f"你喜歡：{character_data['likes']}\n"
             f"你不喜歡：{character_data['dislikes']}\n"
             f"補充：{character_data['extra']}\n\n"
-
+            f"【使用者資料】\n"
+            f"- 暱稱：{nickname or '未提供'}\n"
+            f"- 年齡：{age or '未提供'}\n"
+            f"- 性別：{gender or '未提供'}\n"
+            f"- 背景：{user_background or '未提供'}\n"
+            f"- 補充：{user_extra or '無'}\n\n"
             "請遵守：\n"
             "1. 永遠用「我」對「使用者」說話。\n"
             "2. 加入 *動作*、情緒、場景描寫（戀人視角）。\n"
@@ -986,6 +1090,7 @@ def describe_image(url):
 
 @bot.command()
 async def 圖片(ctx, *, question: str = ""):
+    user_id = str(ctx.author.id)
     """圖片聊天：用 BLIP 理解圖片內容後觸發語意記憶與回應"""
     user_id = str(ctx.author.id)
     image_urls = [a.url for a in ctx.message.attachments if a.content_type and a.content_type.startswith("image/")]
@@ -1015,6 +1120,14 @@ async def 圖片(ctx, *, question: str = ""):
         await ctx.send("你的角色尚未設定，請先到前端設定角色。")
         return
 
+    #使用者資料
+    user_profile = get_user_profile(user_id)
+    nickname = user_profile.get("nickname", "")
+    age = user_profile.get("age", "")
+    gender = user_profile.get("gender", "")
+    user_background = user_profile.get("background", "")
+    user_extra = user_profile.get("extra", "")
+
     # ✅ system prompt + 記憶區塊
     system_msg = {
         "role": "system",
@@ -1022,11 +1135,17 @@ async def 圖片(ctx, *, question: str = ""):
             f"你是 {character_data['name']}，與使用者對話\n"
             f"你與她的關係：{character_data['relationship']}\n"
             f"你的說話風格：{character_data['speaking_style']}\n"
-            f"你的背景故事：{character_data['background']}\n"
+            f"你的背景故事：{character_data['background']}\n"  
             f"你的個性：{character_data['personality']}\n"
             f"你喜歡：{character_data['likes']}\n"
             f"你不喜歡：{character_data['dislikes']}\n"
             f"補充：{character_data['extra']}\n\n"
+            f"【使用者資料】\n"
+            f"- 暱稱：{nickname or '未提供'}\n"
+            f"- 年齡：{age or '未提供'}\n"
+            f"- 性別：{gender or '未提供'}\n"
+            f"- 背景：{user_background or '未提供'}\n"
+            f"- 補充：{user_extra or '無'}\n\n"
             "請遵守：\n"
             "1. 永遠用「我」對「使用者」說話。\n"
             "2. 加入 *動作*、情緒、場景描寫（戀人視角）。\n"

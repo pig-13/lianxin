@@ -3,7 +3,7 @@ import sqlite3
 DB_PATH = "lianxin_ai.db"
 
 WRONG_ID = "123456789012345678"
-CORRECT_ID = "545532372758560769"
+CORRECT_ID = "user_id"
 
 conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()

@@ -87,7 +87,7 @@ def get_similar_memories(query_text, top_k=3, max_distance=None):
 
 # ====== 測試區塊 ======
 if __name__ == "__main__":
-    test_user = "545532372758560769"
+    test_user = "user_id"
     test_input = "劍道社"
 
     build_index(test_user)

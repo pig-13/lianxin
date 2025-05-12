@@ -107,6 +107,21 @@
         align-items: flex-end;
       }
     }
+    .nav-button {
+      display: inline-block;
+      margin: 0 0.5rem;
+      background-color: #87cefa;
+      color: white;
+      padding: 0.6rem 1.2rem;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background-color 0.2s;
+    }
+
+    .nav-button:hover {
+      background-color: #4682b4;
+    }
   </style>
 </head>
 <body>
@@ -115,6 +130,11 @@
   </header>
 
   <main>
+    <div style="text-align: center; margin-bottom: 1.5rem;">
+      <a href="/character_profile" class="nav-button">🎭 角色設定</a>
+      <a href="/user_profile" class="nav-button">👤 使用者設定</a>
+    </div>
+
     <form class="search-bar" method="GET" action="/">
       <input type="text" name="q" placeholder="搜尋你的記憶…" value="{{ query }}" />
       <button type="submit">🔍 搜尋</button>
