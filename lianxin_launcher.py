@@ -39,8 +39,9 @@ def show_env_form():
 
     form.mainloop()
 
-
-if not os.path.exists(".env"):
+# 防止重複啟動
+if getattr(sys, 'frozen', False) and not os.path.exists(".env"):
+    # 只有在打包成 .exe 且沒有 .env 時才啟動表單
     show_env_form()
 
 bot_process = None
