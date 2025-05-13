@@ -6,23 +6,42 @@ import os
 import sys
 
 # == 偵測 .env 是否存在，若不存在則啟動安裝精靈 ==
-def ask_and_write_env():
-    print("🔧 歡迎使用戀芯 AI 安裝精靈，請輸入以下資訊：\n")
-    discord_token = input("1️⃣ 請輸入你的 DISCORD_TOKEN：")
-    api_key = input("2️⃣ 請輸入你的 OPENROUTER_API_KEY：")
-    user_id = input("3️⃣ 請輸入你的 Discord 使用者 ID：")
-    order_code = input("4️⃣ 請輸入你的訂單序號：")
+def show_env_form():
+    def save_and_close():
+        with open(".env", "w", encoding="utf-8") as f:
+            f.write(f"DISCORD_TOKEN={discord_var.get()}\n")
+            f.write(f"OPENROUTER_API_KEY={api_key_var.get()}\n")
+            f.write(f"USER_ID={user_id_var.get()}\n")
+            f.write(f"ORDER_CODE={order_code_var.get()}\n")
+        form.destroy()
 
-    with open(".env", "w", encoding="utf-8") as f:
-        f.write(f"DISCORD_TOKEN={discord_token}\n")
-        f.write(f"OPENROUTER_API_KEY={api_key}\n")
-        f.write(f"USER_ID={user_id}\n")
-        f.write(f"ORDER_CODE={order_code}\n")
+    form = tk.Tk()
+    form.title("戀芯 AI 安裝設定")
 
-    print("\n✅ 設定完成！已產生 .env 檔案。")
+    discord_var = tk.StringVar()
+    api_key_var = tk.StringVar()
+    user_id_var = tk.StringVar()
+    order_code_var = tk.StringVar()
+
+    tk.Label(form, text="DISCORD_TOKEN").grid(row=0, column=0, sticky="w")
+    tk.Entry(form, textvariable=discord_var, width=50).grid(row=0, column=1)
+
+    tk.Label(form, text="OPENROUTER_API_KEY").grid(row=1, column=0, sticky="w")
+    tk.Entry(form, textvariable=api_key_var, width=50).grid(row=1, column=1)
+
+    tk.Label(form, text="Discord 使用者 ID").grid(row=2, column=0, sticky="w")
+    tk.Entry(form, textvariable=user_id_var, width=50).grid(row=2, column=1)
+
+    tk.Label(form, text="訂單序號").grid(row=3, column=0, sticky="w")
+    tk.Entry(form, textvariable=order_code_var, width=50).grid(row=3, column=1)
+
+    tk.Button(form, text="儲存並開始", command=save_and_close).grid(row=4, columnspan=2, pady=10)
+
+    form.mainloop()
+
 
 if not os.path.exists(".env"):
-    ask_and_write_env()
+    show_env_form()
 
 bot_process = None
 flask_process = None
