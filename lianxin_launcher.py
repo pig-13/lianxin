@@ -5,6 +5,10 @@ import threading
 import os
 import sys
 
+# 若是被當作子程序啟動，不執行主 UI
+if __name__ != "__main__":
+    sys.exit(0)
+
 # == 偵測 .env 是否存在，若不存在則啟動安裝精靈 ==
 def show_env_form():
     def save_and_close():
