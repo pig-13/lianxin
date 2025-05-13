@@ -1,9 +1,10 @@
 # memory_ui.py
 from flask import Flask, render_template, request, redirect, url_for
 import sqlite3
+import os
 
-app = Flask(__name__)
-DB_PATH = 'lianxin_ai.db'  # 修改為你實際的資料庫路徑
+app = Flask(__name__, template_folder="templates")
+DB_PATH = 'lianxin_ai.db'
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -23,35 +24,35 @@ def index():
 @app.route('/add', methods=['POST'])
 def add_memory():
     content = request.form['content']
+    user_id = request.args.get("user_id", os.getenv("USER_ID", "default_user"))
     conn = get_db()
-    conn.execute("INSERT INTO memories (user_id, role, content) VALUES (?, ?, ?)", ('user_id', 'memory', content))
+    conn.execute("INSERT INTO memories (user_id, role, content) VALUES (?, ?, ?)", (user_id, 'memory', content))
     conn.commit()
-    return redirect(url_for('index'))
+    return redirect(url_for('index', user_id=user_id))
 
 @app.route('/edit/<int:id>', methods=['GET', 'POST'])
 def edit_memory(id):
+    user_id = request.args.get("user_id", os.getenv("USER_ID", "default_user"))
     conn = get_db()
     if request.method == 'POST':
         content = request.form['content']
         conn.execute("UPDATE memories SET content = ? WHERE id = ?", (content, id))
         conn.commit()
-        return redirect(url_for('index'))
+        return redirect(url_for('index', user_id=user_id))
     memory = conn.execute("SELECT * FROM memories WHERE id = ?", (id,)).fetchone()
     return render_template('edit.html', memory=memory)
 
 @app.route('/delete/<int:id>')
 def delete_memory(id):
+    user_id = request.args.get("user_id", os.getenv("USER_ID", "default_user"))
     conn = get_db()
     conn.execute("DELETE FROM memories WHERE id = ?", (id,))
     conn.commit()
-    return redirect(url_for('index'))
+    return redirect(url_for('index', user_id=user_id))
 
-# ✅ 使用者設定頁
 @app.route('/user_profile', methods=['GET', 'POST'])
 def user_profile():
-    DEFAULT_USER_ID = " "
-    user_id = request.args.get("user_id", DEFAULT_USER_ID)
-    user_id = 'user_id'  # 改為登入系統後的變數
+    user_id = request.args.get("user_id", os.getenv("USER_ID", "default_user"))
     conn = get_db()
     if request.method == 'POST':
         nickname = request.form.get('nickname')
@@ -71,17 +72,14 @@ def user_profile():
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (user_id, nickname, age, gender, background, extra))
         conn.commit()
-        return redirect(url_for('user_profile'))
+        return redirect(url_for('user_profile', user_id=user_id))
 
     profile = conn.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()
     return render_template('user_profile.html', profile=profile)
 
-# ✅ 角色設定頁
 @app.route('/character_profile', methods=['GET', 'POST'])
 def character_profile():
-    DEFAULT_USER_ID = " "
-    user_id = request.args.get("user_id", DEFAULT_USER_ID)
-    user_id = 'user_id'  # 改為登入系統後的變數
+    user_id = request.args.get("user_id", os.getenv("USER_ID", "default_user"))
     conn = get_db()
     if request.method == 'POST':
         form = request.form
@@ -100,7 +98,7 @@ def character_profile():
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (user_id, *values))
         conn.commit()
-        return redirect(url_for('character_profile'))
+        return redirect(url_for('character_profile', user_id=user_id))
 
     character = conn.execute("SELECT * FROM characters WHERE user_id = ?", (user_id,)).fetchone()
     return render_template('character_profile.html', character=character)

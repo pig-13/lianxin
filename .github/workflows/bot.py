@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
-import tiktoken
+
 
 import aiohttp, json, textwrap, asyncio
 
@@ -33,7 +33,7 @@ EMBED_MODEL_NAME   = "all-MiniLM-L6-v2"
 EMBED_DIM          = 384
 model_embed        = SentenceTransformer(EMBED_MODEL_NAME)
 
-encoding           = tiktoken.get_encoding("cl100k_base")
+
 
 DAILY_LIMIT        = 1000          # 每日 API 次數
 REQUESTS_PER_CHAT  = 2             # 一次聊天 ≈ 2 次 OpenRouter 請求
@@ -247,7 +247,7 @@ def extract_text(content):
     return ""
 
 def estimate_tokens(messages):
-    return sum(len(encoding.encode(extract_text(m["content"]))) for m in messages)
+    return sum(len(str(m.get("content", ""))) // 3 for m in messages)
 
 def safe_trim(messages, answer_budget=2048, max_ctx=8192):
     """自動修剪 messages 確保總 token 不會爆掉（保留 system 與最近訊息）"""
@@ -474,11 +474,12 @@ async def summarize_conversation(user_id: str, recent_pairs: list[dict]) -> str:
                     "【任務目標】\n"
                     "- 條列出真實發生的事件、行為、情緒或決策\n"
                     "- 僅根據對話內容，嚴禁虛構任何未提及的資訊\n"
-                    "- 完全禁止使用角色語氣、小說句式、*動作* 等描述\n\n"
+                    "- 完全禁止使用角色語氣、小說句式、*動作* 等描述\n"
+                    "- 請自行帶入AI跟使用者的名稱\n\n"
                     "【正確範例】\n"
-                    "1. {user_name}因為看短影片，覺得自己專注力變差\n"
-                    "2. {user_name}想明天早上吃金黃酥脆的薯餅\n"
-                    "3. {ai_name}向{user_name}道歉，表示自己記錯事情\n\n"
+                    "1. 使用者因為看短影片，覺得自己專注力變差\n"
+                    "2. 使用者想明天早上吃金黃酥脆的薯餅\n"
+                    "3. AI向使用者道歉，表示自己記錯事情\n\n"
                     "請條列出 3–5 項真實資訊："
                 )
             },
@@ -601,7 +602,7 @@ async def 指令(ctx):
     user_id = str(ctx.author.id)
     await ctx.send(
         """**📜 可用指令總覽**
-
+注意！一切AI皆為虛構內容！
 🧑‍🎤 角色相關 (可至記憶管理系統的頁面設定也可用DC指令設定)
 └ `！查看角色`                 查看自己的角色資料  
 └ `！重設角色`                 重置自己的角色資料  
@@ -1208,6 +1209,13 @@ async def 圖片(ctx, *, question: str = ""):
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("UPDATE memories SET content = ? WHERE id = ?", (f"【記憶{new_id}】{today} {summary}", new_id))
         await ctx.send("🧠 已新增記憶！")
+
+
+# === 檢查訂單授權 ===
+valid_orders = {"LXA-96034571"}
+user_order = os.getenv("ORDER_CODE")
+if user_order not in valid_orders:
+    raise Exception("❌ 尚未授權，請先輸入有效訂單編號到 .env 檔案中。")
 
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)

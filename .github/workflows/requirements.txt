@@ -1,0 +1,13 @@
+aiohttp
+discord.py
+flask
+requests
+Pillow
+transformers
+torch
+torchvision
+accelerate
+sentence-transformers
+faiss-cpu
+python-dotenv
+tk

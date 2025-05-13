@@ -1,0 +1,42 @@
+# Python 編譯檔與暫存
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# 虛擬環境與設定檔
+venv/
+.env
+.env/
+
+# 資料庫與模型檔案
+*.db
+*.json
+*.exe
+*.zip
+
+# 開發工具設定
+.vscode/
+*.code-workspace
+
+# 日誌檔與 PID
+*.log
+*.pid
+logs/
+
+# Firebase 舊檔
+firebase-debug.log*
+.firebase/
+.firebaserc
+
+# Node 殘留資料夾（若用不到）
+node_modules/
+bower_components/
+build/
+dist/
+
+# SQLite CLI 工具（打包時不需要）
+sqlite3*.*
+
+#打包殘檔案
+.spec
