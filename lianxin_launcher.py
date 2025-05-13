@@ -17,7 +17,8 @@ if getattr(sys, 'frozen', False):
 # ========== 📦 若未偵測到 .env 檔案，顯示設定表單 ==========
 def show_env_form():
     def save_and_close():
-        with open(".env", "w", encoding="utf-8") as f:
+        env_path = os.path.join(os.path.dirname(sys.executable), ".env")
+        with open(env_path, "w", encoding="utf-8") as f:
             f.write(f"DISCORD_TOKEN={discord_var.get()}\n")
             f.write(f"OPENROUTER_API_KEY={api_key_var.get()}\n")
             f.write(f"USER_ID={user_id_var.get()}\n")
