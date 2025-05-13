@@ -27,10 +27,10 @@ jobs:
 
       - name: 打包為 .exe
         run: |
-          pyinstaller --noconfirm --onefile --windowed lianxin_launcher.py
+          pyinstaller --noconfirm lianxin_launcher.spec
 
       - name: 上傳打包結果
         uses: actions/upload-artifact@v4
         with:
           name: lianxin-exe
-          path: dist/*.exe
+          path: dist/lianxin_launcher/**

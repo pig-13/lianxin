@@ -1,20 +1,26 @@
+# lianxin_launcher.spec
 # -*- mode: python ; coding: utf-8 -*-
 
+block_cipher = None
 
 a = Analysis(
     ['lianxin_launcher.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        ('bot.py', '.'), 
+        ('memory_ui.py', '.'), 
+        ('lianxin.ico', '.')
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
-    optimize=0,
 )
-pyz = PYZ(a.pure)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
@@ -22,18 +28,11 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='launcher',
+    name='lianxin_launcher',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=False,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon=['lianxin.ico'],
+    console=True,  # ❗視情況改成 False
+    icon='lianxin.ico'
 )

@@ -9,9 +9,13 @@ import sys
 # 如果收到 --child 參數，就不開 UI
 if "--child" in sys.argv:
     sys.exit(0)
-# 如果是打包後執行的，就切換到 PyInstaller 的臨時目錄
+# ========== 📂 定位打包後的 base 路徑 ==========
+
 if getattr(sys, 'frozen', False):
-    os.chdir(sys._MEIPASS)
+    BASE_PATH = sys._MEIPASS  # 打包後的解壓資料夾
+else:
+    BASE_PATH = os.path.dirname(__file__)  # 平時開發時的檔案路徑
+
 
 
 # ========== 📦 若未偵測到 .env 檔案，顯示設定表單 ==========
@@ -59,20 +63,22 @@ flask_process = None
 # ========== 🌐 啟動記憶頁面 ==========
 def launch_memory_ui():
     global flask_process
+    memory_ui_path = os.path.join(BASE_PATH, "memory_ui.py")
     flask_process = subprocess.Popen(
-        [sys.executable, "memory_ui.py", "--child"],
+        [sys.executable, memory_ui_path, "--child"],
         creationflags=subprocess.CREATE_NO_WINDOW
     )
 
+
 # ========== 🤖 啟動機器人 ==========
 def start_bot():
-    print("🧪 啟動 bot.py 的路徑是：", os.getcwd())
-    print("🧪 呼叫指令：", [sys.executable, "bot.py", "--child"])
     global bot_process
+    bot_path = os.path.join(BASE_PATH, "bot.py")
+    print("🧪 啟動 bot.py 的路徑是：", bot_path)
     if bot_process is None:
         log_output.insert(tk.END, "✅ 啟動中...\n")
         bot_process = subprocess.Popen(
-            [sys.executable, os.path.join(os.getcwd(), "bot.py"), "--child"],
+            [sys.executable, bot_path, "--child"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True,
