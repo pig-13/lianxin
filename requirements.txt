@@ -10,4 +10,5 @@ accelerate
 sentence-transformers
 faiss-cpu
 python-dotenv
-tk
+tk # 若打包時 tkinter 有問題，請確保 Python 環境支援 tkinter
+pytz
