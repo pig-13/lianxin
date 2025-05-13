@@ -1,8 +1,6 @@
 import sys
 
-# 如果被當成子程序呼叫，繼續執行；否則若是 .exe 啟動且沒加參數，防止重啟控制台
-if "--child" not in sys.argv and getattr(sys, 'frozen', False):
-    sys.exit(0)
+
 
 def start_bot():
     import os
@@ -1246,7 +1244,9 @@ def start_bot():
     # ✅ 啟動 bot
     bot.run(DISCORD_TOKEN)
 
-
-# ✅ 若 bot.py 被直接執行（非 import），才啟動
 if __name__ == "__main__":
+    # 若是打包成 .exe（sys.frozen）但沒有加 --child，就退出，防止重複視窗
+    if getattr(sys, 'frozen', False) and "--child" not in sys.argv:
+        sys.exit(0)
     start_bot()
+
