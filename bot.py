@@ -1240,9 +1240,11 @@ def start_bot():
                 conn.execute("UPDATE memories SET content = ? WHERE id = ?", (f"【記憶{new_id}】{today} {summary}", new_id))
             await ctx.send("🧠 已新增記憶！")
 
-
-    # ✅ 啟動 bot
-    bot.run(DISCORD_TOKEN)
+    try:
+        print("🚀 開始啟動 bot...")
+        bot.run(DISCORD_TOKEN)
+    except Exception as e:
+        print("❌ bot.run 發生錯誤：", e)
 
 if __name__ == "__main__":
     # 若是打包成 .exe（sys.frozen）但沒有加 --child，就退出，防止重複視窗
