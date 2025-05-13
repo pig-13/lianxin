@@ -9,6 +9,10 @@ import sys
 # 如果收到 --child 參數，就不開 UI
 if "--child" in sys.argv:
     sys.exit(0)
+# 如果是打包後執行的，就切換到 PyInstaller 的臨時目錄
+if getattr(sys, 'frozen', False):
+    os.chdir(sys._MEIPASS)
+
 
 # ========== 📦 若未偵測到 .env 檔案，顯示設定表單 ==========
 def show_env_form():
@@ -61,11 +65,13 @@ def launch_memory_ui():
 
 # ========== 🤖 啟動機器人 ==========
 def start_bot():
+    print("🧪 啟動 bot.py 的路徑是：", os.getcwd())
+    print("🧪 呼叫指令：", [sys.executable, "bot.py", "--child"])
     global bot_process
     if bot_process is None:
         log_output.insert(tk.END, "✅ 啟動中...\n")
         bot_process = subprocess.Popen(
-            [sys.executable, "bot.py", "--child"],
+            [sys.executable, os.path.join(os.getcwd(), "bot.py"), "--child"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True,

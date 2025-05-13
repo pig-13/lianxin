@@ -1,19 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+block_cipher = None
 
 a = Analysis(
-    ['bot.py'],
+    ['lianxin_launcher.py'],  # ✅ 主程式改為 launcher
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        ('bot.py', '.'),                # ✅ 要用到的 bot 檔
+        ('memory_ui.py', '.'),          # ✅ Flask UI
+        ('db_utils.py', '.'),           # ✅ 若有分 utils
+        ('templates/', 'templates'),    # ✅ Flask templates 資料夾
+        ('.env', '.'),                  # ✅ 若有預設的環境變數
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
-    noarchive=False,
-    optimize=0,
+    noarchive=False
 )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -22,18 +29,13 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='bot',
+    name='lianxin_launcher',  # ✅ 這樣會產生 lianxin_launcher.exe
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon=['lianxin.ico'],
+    console=True,  # ✅ 如果你想要有 log 輸出視窗
+    icon='lianxin.ico'  # ✅ 若有設定圖示
 )
