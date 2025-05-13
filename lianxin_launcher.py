@@ -3,6 +3,26 @@ from tkinter.scrolledtext import ScrolledText
 import subprocess
 import threading
 import os
+import sys
+
+# == 偵測 .env 是否存在，若不存在則啟動安裝精靈 ==
+def ask_and_write_env():
+    print("🔧 歡迎使用戀芯 AI 安裝精靈，請輸入以下資訊：\n")
+    discord_token = input("1️⃣ 請輸入你的 DISCORD_TOKEN：")
+    api_key = input("2️⃣ 請輸入你的 OPENROUTER_API_KEY：")
+    user_id = input("3️⃣ 請輸入你的 Discord 使用者 ID：")
+    order_code = input("4️⃣ 請輸入你的訂單序號：")
+
+    with open(".env", "w", encoding="utf-8") as f:
+        f.write(f"DISCORD_TOKEN={discord_token}\n")
+        f.write(f"OPENROUTER_API_KEY={api_key}\n")
+        f.write(f"USER_ID={user_id}\n")
+        f.write(f"ORDER_CODE={order_code}\n")
+
+    print("\n✅ 設定完成！已產生 .env 檔案。")
+
+if not os.path.exists(".env"):
+    ask_and_write_env()
 
 bot_process = None
 flask_process = None
@@ -10,7 +30,7 @@ flask_process = None
 def launch_memory_ui():
     global flask_process
     flask_process = subprocess.Popen(
-        ["memory_ui.exe"],
+        [sys.executable, "memory_ui.py"],
         creationflags=subprocess.CREATE_NO_WINDOW
     )
 
@@ -18,7 +38,12 @@ def start_bot():
     global bot_process
     if bot_process is None:
         log_output.insert(tk.END, "✅ 啟動中...\n")
-        bot_process = subprocess.Popen(["bot.exe"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        bot_process = subprocess.Popen(
+            [sys.executable, "bot.py"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
         log_output.insert(tk.END, "✅ 已啟動戀芯 AI 機器人\n請到 http://localhost:5000 查看記憶介面\n\n")
         threading.Thread(target=read_output, daemon=True).start()
 
