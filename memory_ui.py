@@ -2,6 +2,14 @@
 from flask import Flask, render_template, request, redirect, url_for
 import sqlite3
 import os
+import sys
+
+# 防止被當成主程式重啟自己
+if "--child" in sys.argv:
+    pass  # 正常執行
+elif getattr(sys, 'frozen', False):
+    # 被打包成 .exe 且不是從主程式呼叫
+    sys.exit(0)
 
 app = Flask(__name__, template_folder="templates")
 DB_PATH = 'lianxin_ai.db'
@@ -104,4 +112,4 @@ def character_profile():
     return render_template('character_profile.html', character=character)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=False)  # 不要用 debug=True，會造成雙重啟動

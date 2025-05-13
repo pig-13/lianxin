@@ -1,3 +1,9 @@
+import sys
+
+# 如果被當成子程序呼叫，繼續執行；否則若是 .exe 啟動且沒加參數，防止重啟控制台
+if "--child" not in sys.argv and getattr(sys, 'frozen', False):
+    sys.exit(0)
+
 def start_bot():
     import os
     import sqlite3

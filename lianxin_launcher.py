@@ -5,11 +5,12 @@ import threading
 import os
 import sys
 
-# 若是被當作子程序啟動，不執行主 UI
-if __name__ != "__main__":
+# ========== 🧠 防止子程序重複啟動主視窗 ==========
+# 如果收到 --child 參數，就不開 UI
+if "--child" in sys.argv:
     sys.exit(0)
 
-# == 偵測 .env 是否存在，若不存在則啟動安裝精靈 ==
+# ========== 📦 若未偵測到 .env 檔案，顯示設定表單 ==========
 def show_env_form():
     def save_and_close():
         with open(".env", "w", encoding="utf-8") as f:
@@ -40,37 +41,40 @@ def show_env_form():
     tk.Entry(form, textvariable=order_code_var, width=50).grid(row=3, column=1)
 
     tk.Button(form, text="儲存並開始", command=save_and_close).grid(row=4, columnspan=2, pady=10)
-
     form.mainloop()
 
-# 防止重複啟動
+# 只有在打包後執行，且沒有 .env 檔案時才顯示設定表單
 if getattr(sys, 'frozen', False) and not os.path.exists(".env"):
-    # 只有在打包成 .exe 且沒有 .env 時才啟動表單
     show_env_form()
 
+# ========== 🧠 全域子程序 ==========
 bot_process = None
 flask_process = None
 
+# ========== 🌐 啟動記憶頁面 ==========
 def launch_memory_ui():
     global flask_process
     flask_process = subprocess.Popen(
-        [sys.executable, "memory_ui.py"],
+        [sys.executable, "memory_ui.py", "--child"],
         creationflags=subprocess.CREATE_NO_WINDOW
     )
 
+# ========== 🤖 啟動機器人 ==========
 def start_bot():
     global bot_process
     if bot_process is None:
         log_output.insert(tk.END, "✅ 啟動中...\n")
         bot_process = subprocess.Popen(
-            [sys.executable, "bot.py"],
+            [sys.executable, "bot.py", "--child"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True
+            universal_newlines=True,
+            bufsize=1
         )
         log_output.insert(tk.END, "✅ 已啟動戀芯 AI 機器人\n請到 http://localhost:5000 查看記憶介面\n\n")
         threading.Thread(target=read_output, daemon=True).start()
 
+# ========== 🛑 關閉機器人 ==========
 def stop_bot():
     global bot_process
     if bot_process:
@@ -78,19 +82,19 @@ def stop_bot():
         log_output.insert(tk.END, "🛑 已關閉戀芯 AI 機器人\n")
         bot_process = None
 
+# ========== 🔁 重新啟動 ==========
 def restart_bot():
     stop_bot()
     window.after(1000, start_bot)
 
+# ========== 📋 讀取輸出 ==========
 def read_output():
     while bot_process and bot_process.stdout:
-        line = bot_process.stdout.readline()
-        if not line:
-            break
-        log_output.insert(tk.END, line)
-        log_output.see(tk.END)
+        for line in iter(bot_process.stdout.readline, ''):
+            log_output.insert(tk.END, line)
+            log_output.see(tk.END)
 
-# === UI ===
+# ========== 🖼️ UI 設計 ==========
 window = tk.Tk()
 window.title("戀芯 AI 控制台")
 window.geometry("750x500")
@@ -116,6 +120,7 @@ tk.Button(frame, text="🔄 重新啟動", command=restart_bot, **btn_style).pac
 log_output = ScrolledText(window, height=25, font=("Consolas", 10), bg="white")
 log_output.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
+# 關閉程式時結束子程序
 def on_close():
     global flask_process, bot_process
     if flask_process:
@@ -126,7 +131,8 @@ def on_close():
 
 window.protocol("WM_DELETE_WINDOW", on_close)
 
-# 新增：用 threading 執行記憶頁面
+# 啟動記憶 UI（用 thread 防止卡 UI）
 threading.Thread(target=launch_memory_ui, daemon=True).start()
 
+# 主視窗進入事件循環
 window.mainloop()
