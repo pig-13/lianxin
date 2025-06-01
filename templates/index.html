@@ -107,6 +107,7 @@
         align-items: flex-end;
       }
     }
+
     .nav-button {
       display: inline-block;
       margin: 0 0.5rem;
@@ -131,16 +132,17 @@
 
   <main>
     <div style="text-align: center; margin-bottom: 1.5rem;">
-      <a href="/character_profile" class="nav-button">🎭 角色設定</a>
-      <a href="/user_profile" class="nav-button">👤 使用者設定</a>
+      <a href="/character_profile?user_id={{ user_id }}" class="nav-button">🎭 角色設定</a>
+      <a href="/user_profile?user_id={{ user_id }}" class="nav-button">👤 使用者設定</a>
     </div>
 
     <form class="search-bar" method="GET" action="/">
+      <input type="hidden" name="user_id" value="{{ user_id }}">
       <input type="text" name="q" placeholder="搜尋你的記憶…" value="{{ query }}" />
       <button type="submit">🔍 搜尋</button>
     </form>
 
-    <form method="POST" action="/add" style="margin-bottom: 2rem;">
+    <form method="POST" action="/add?user_id={{ user_id }}" style="margin-bottom: 2rem;">
       <textarea name="content" rows="3" placeholder="寫下一段新的戀芯記憶…" required></textarea><br />
       <button type="submit">➕ 新增記憶</button>
     </form>
@@ -149,8 +151,8 @@
     <div class="memory-card">
       <p>{{ memory.content }}</p>
       <div class="memory-actions">
-        <a href="{{ url_for('edit_memory', id=memory.id) }}">✏️ 編輯</a>
-        <a href="{{ url_for('delete_memory', id=memory.id) }}" onclick="return confirm('確定要刪除這則記憶嗎？')">🗑️ 刪除</a>
+        <a href="{{ url_for('edit_memory', id=memory.id) }}?user_id={{ user_id }}">✏️ 編輯</a>
+        <a href="{{ url_for('delete_memory', id=memory.id) }}?user_id={{ user_id }}" onclick="return confirm('確定要刪除這則記憶嗎？')">🗑️ 刪除</a>
       </div>
     </div>
     {% endfor %}

@@ -1,6 +1,14 @@
 import sqlite3
+import sys
+import os
 
-DB_PATH = "lianxin_ai.db"
+# ✅ 支援打包後與開發階段的路徑函式
+def get_resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+
+DB_PATH = get_resource_path("lianxin_ai.db")
 
 # 建立主資料庫連線
 conn = sqlite3.connect(DB_PATH)
@@ -104,7 +112,7 @@ def init_memory_db():
 # 初始化完成
 
 def ensure_schema():
-    conn = sqlite3.connect("lianxin_ai.db")
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
         cursor.execute("ALTER TABLE memories ADD COLUMN embedding BLOB;")

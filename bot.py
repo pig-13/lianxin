@@ -3,7 +3,7 @@
 # ────────────────────────────────────────────────────────────────────────
 import os
 import sqlite3
-import time
+import sys
 from datetime import datetime, timedelta
 
 import asyncio
@@ -18,22 +18,39 @@ from dotenv import load_dotenv
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
-import tiktoken
+
 
 import aiohttp, json, textwrap, asyncio
 
 # ╭─[ 基本設定 ]──────────────────────────────────────────────────────────╮
+
+from env_setup import create_env
+create_env()  # ← 這行應該放最前面！
+
+from dotenv import load_dotenv
 load_dotenv()
+
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 DISCORD_TOKEN      = os.getenv("DISCORD_TOKEN")
 
-DB_PATH            = "lianxin_ai.db"
+if not DISCORD_TOKEN:
+    print("❌ 錯誤：未取得 Discord Token，請確認 .env 已設定正確")
+    input("按下 Enter 結束...")
+    exit(1)
+
+
+# ✅ 自動處理路徑，不論是否被打包
+def get_resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+
+DB_PATH = get_resource_path("lianxin_ai.db")
 
 EMBED_MODEL_NAME   = "all-MiniLM-L6-v2"
 EMBED_DIM          = 384
 model_embed        = SentenceTransformer(EMBED_MODEL_NAME)
 
-encoding           = tiktoken.get_encoding("cl100k_base")
 
 DAILY_LIMIT        = 1000          # 每日 API 次數
 REQUESTS_PER_CHAT  = 2             # 一次聊天 ≈ 2 次 OpenRouter 請求
@@ -239,6 +256,7 @@ def get_similar_memories(user_id: str, query_text: str,
 # ╰───────────────────────────────────────────────────────────────────────╯
 
 # ╭─[ Token 工具 ]────────────────────────────────────────────────────────╮
+# 🔄 替代原本 extract_text
 def extract_text(content):
     if isinstance(content, str):
         return content
@@ -246,9 +264,12 @@ def extract_text(content):
         return "\n".join(block.get("text", "") for block in content if block.get("type") == "text")
     return ""
 
+# 🔄 替代原本 estimate_tokens（使用簡易文字長度估算）
 def estimate_tokens(messages):
-    return sum(len(encoding.encode(extract_text(m["content"]))) for m in messages)
+    total_chars = sum(len(extract_text(m.get("content", ""))) for m in messages)
+    return int(total_chars / 1.5)  # 約略每 1.5 字 ≈ 1 token（保守估算）
 
+# 🔄 替代原本 safe_trim（邏輯不變）
 def safe_trim(messages, answer_budget=2048, max_ctx=8192):
     """自動修剪 messages 確保總 token 不會爆掉（保留 system 與最近訊息）"""
     while len(messages) > 2 and estimate_tokens(messages) + answer_budget > max_ctx:
@@ -281,7 +302,7 @@ def filter_bad_memories(mem_list: list[tuple[str, float]]) -> list[tuple[str, fl
 async def generate_reply(
     user_id: str,
     messages: list[dict],
-    model: str = "google/gemini-2.5-pro-exp-03-25",
+    model: str = "google/gemma-3-27b-it:free",
     temperature: float = 0.7,
     max_tokens: int = 8000,
     message=None
@@ -348,44 +369,42 @@ async def generate_reply(
     }
 
     async def call_openrouter_api(payload, headers, sess):
-        for attempt in range(3):
-            try:
-                async with sess.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    json=payload, headers=headers
-                ) as r:
-                    raw = await r.text()
+        try:
+            # 僅執行一次，不使用 retry
+            async with sess.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                json=payload, headers=headers
+            ) as r:
+                raw = await r.text()
 
-                    if r.status == 429:
-                        info = json.loads(raw)
-                        err_msg = info["error"]["message"]
-                        now_local = datetime.now(tz)
-                        tomorrow_8am = (now_local + timedelta(days=1)).replace(
-                            hour=8, minute=0, second=0, microsecond=0)
-                        reset_str = tomorrow_8am.strftime("%m-%d 08:00")
-                        raise RateLimitError(err_msg, reset_str)
+                if r.status == 429:
+                    info = json.loads(raw)
+                    err_msg = info["error"]["message"]
+                    now_local = datetime.now(tz)
+                    tomorrow_8am = (now_local + timedelta(days=1)).replace(
+                        hour=8, minute=0, second=0, microsecond=0)
+                    reset_str = tomorrow_8am.strftime("%m-%d 08:00")
+                    raise RateLimitError(err_msg, reset_str)
 
-                    if r.status != 200:
-                        print(f"[OpenRouter] HTTP {r.status}\n{textwrap.shorten(raw, 150)}")
-                        raise RuntimeError(f"http {r.status}")
+                if r.status != 200:
+                    print(f"[OpenRouter] HTTP {r.status}\n{textwrap.shorten(raw, 150)}")
+                    raise RuntimeError(f"http {r.status}")
 
-                    data = json.loads(raw)
-                    if "choices" not in data:
-                        print("[OpenRouter] 回傳中無 choices：", raw[:200])
-                        raise RuntimeError("missing_choices")
+                data = json.loads(raw)
+                if "choices" not in data:
+                    print("[OpenRouter] 回傳中無 choices：", raw[:200])
+                    raise RuntimeError("missing_choices")
 
-                    reply = data["choices"][0]["message"]["content"].strip()
+                reply = data["choices"][0]["message"]["content"].strip()
 
-                    if not reply or any(k in reply for k in FORBIDDEN_KEYWORDS):
-                        raise RuntimeError("invalid_or_blocked_reply")  # ✅ 改為 raise
+                if not reply or any(k in reply for k in FORBIDDEN_KEYWORDS):
+                    raise RuntimeError("invalid_or_blocked_reply")
 
-                    return reply
+                return reply
 
-            except Exception as e:
-                print(f"[call_openrouter_api] retry {attempt+1}/3 ➜ {repr(e)}")
-                await asyncio.sleep(3)
-
-        raise RuntimeError("three tries failed")
+        except Exception as e:
+            print(f"[call_openrouter_api] Gemini 失敗 ➜ {repr(e)}")
+            raise e  # 交給外層處理 → 會進入備援邏輯
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as sess:
         try:
@@ -394,7 +413,7 @@ async def generate_reply(
         except (RateLimitError, RuntimeError) as e:  # ✅ 捕捉 RateLimitError
             print(f"[備援啟動條件] 捕獲：{e}")
             if any(k in str(e).lower() for k in ["rate_limit", "missing_choices", "invalid_or_blocked_reply","three tries failed"]):
-                print("⚠️ Gemini 超量或異常，自動切換至 DeepSeek")
+                print("⚠️ Gemini 超量或異常，自動切換至 deepseek")
                 payload["model"] = "deepseek/deepseek-chat-v3-0324:free"
                 try:
                     return await call_openrouter_api(payload, headers, sess)
@@ -474,11 +493,12 @@ async def summarize_conversation(user_id: str, recent_pairs: list[dict]) -> str:
                     "【任務目標】\n"
                     "- 條列出真實發生的事件、行為、情緒或決策\n"
                     "- 僅根據對話內容，嚴禁虛構任何未提及的資訊\n"
-                    "- 完全禁止使用角色語氣、小說句式、*動作* 等描述\n\n"
+                    "- 完全禁止使用角色語氣、小說句式、*動作* 等描述\n"
+                    "- 請自行帶入AI跟使用者的名稱\n\n"
                     "【正確範例】\n"
-                    "1. {user_name}因為看短影片，覺得自己專注力變差\n"
-                    "2. {user_name}想明天早上吃金黃酥脆的薯餅\n"
-                    "3. {ai_name}向{user_name}道歉，表示自己記錯事情\n\n"
+                    "1. 使用者因為看短影片，覺得自己專注力變差\n"
+                    "2. 使用者想明天早上吃金黃酥脆的薯餅\n"
+                    "3. AI向使用者道歉，表示自己記錯事情\n\n"
                     "請條列出 3–5 項真實資訊："
                 )
             },
@@ -629,6 +649,7 @@ async def 指令(ctx):
 
 🧠 記憶管理
 └ `！記憶管理`                 開啟一個介面查看記憶跟編輯、新增、刪除，還有角色跟使用者資料
+└ `！查看記憶                  查看最新五則記憶
 
 🔧 其他工具
 └ `！查我ID`                   顯示你的 Discord 使用者 ID  
@@ -790,9 +811,42 @@ async def memory_ui_link(ctx):
     user_id = str(ctx.author.id)
     await ctx.send(
         "🧠 要編輯記憶、搜尋或刪除，請打開記憶管理介面：\n"
-        "👉 [http://localhost:5000]\n\n"
+        f"👉 [http://localhost:5000/?user_id={user_id}]\n\n"
         "（只能在本地電腦開啟記憶管理，手機不行）"
     )
+
+@bot.command(name="查看記憶")
+async def view_memories(ctx):
+    user_id = str(ctx.author.id)
+    
+    # 連接資料庫
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # 查詢最新五則記憶
+    cursor.execute("""
+        SELECT id, content FROM memories
+        WHERE user_id = ? AND role = 'memory'
+        ORDER BY id DESC
+        LIMIT 5
+    """, (user_id,))
+    results = cursor.fetchall()
+    conn.close()
+
+    # 沒有記憶的情況
+    if not results:
+        await ctx.send("🧠 你還沒有任何記憶喔！可以到記憶管理介面新增～")
+        return
+
+    # 回傳格式整理
+    message = "🧠 你最近的 5 則記憶：\n\n"
+    for i, (mem_id, content) in enumerate(results, 1):
+        preview = content.strip().replace("\n", " ")
+        if len(preview) > 50:
+            preview = preview[:50] + "..."
+        message += f"【{i}】{preview}\n"
+
+    await ctx.send(message)
 
 # ────────────────────────────────────────────────────────────────────────
 # 提醒系統
@@ -970,7 +1024,7 @@ async def 聊天(ctx, *, question: str):
         async with ctx.typing():
             answer = await generate_reply(
                 user_id, messages,
-                model="google/gemini-2.5-pro-exp-03-25",
+                model="google/gemma-3-27b-it:free",
                 max_tokens=2048
             )
         # ❗這裡改成比對你 return 的 fallback 字串
@@ -982,7 +1036,7 @@ async def 聊天(ctx, *, question: str):
         return
 
     except Exception as e:
-        print("🌀 使用 deepseek/deepseek-chat:free 備援中")
+        print("🌀 使用deepseek備援中")
         try:
             answer = await generate_reply(
                 user_id, messages,
@@ -1181,7 +1235,7 @@ async def 圖片(ctx, *, question: str = ""):
             reply = await generate_reply(
                 user_id=user_id,
                 messages=messages,
-                model="google/gemini-2.5-pro-exp-03-25",
+                model="google/gemma-3-27b-it:free",
                 max_tokens=2000
             )
 
